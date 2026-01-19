@@ -14,6 +14,8 @@ from utils.experience import ymd_from_days
 # === NOMBRES EXACTOS DE TUS CARPETAS ===
 IN_FOLDER_NAME = "009. EDI RECIBIDA"
 OUT_FOLDER_NAME = "011. INSTALACIÓN DE COMITÉ"  # <- debe coincidir EXACTO con tu carpeta real
+PROCESS_OUTPUT_TEMPLATE_NAME = "Formato_Salida_Expresion_Interes.xlsx"
+
 
 # Dentro de OUT_FOLDER_NAME:
 PROCESADOS_SUBFOLDER = "procesados"
@@ -77,6 +79,19 @@ def get_in_out_dirs(root: Path, proceso: str):
     in_dir = root / proceso / IN_FOLDER_NAME
     out_dir = root / proceso / OUT_FOLDER_NAME
     return in_dir, out_dir
+
+def resolve_template_for_proceso(root: Path, proceso: str, cfg_global: dict) -> Path:
+    """
+    Busca plantilla por proceso dentro de:
+      <proceso>/011. INSTALACIÓN DE COMITÉ/Formato_Salida_Expresion_Interes.xlsx
+    Si no existe, usa cfg_global["output_template"].
+    """
+    _, out_dir = get_in_out_dirs(root, proceso)
+    tpl_local = out_dir / PROCESS_OUTPUT_TEMPLATE_NAME
+    if tpl_local.exists():
+        return tpl_local
+
+    return Path(cfg_global["output_template"])
 
 
 def choose_one_file_per_postulante_folder(in_dir: Path):
@@ -319,17 +334,19 @@ def save_csv(path: Path, rows: list, header: list):
 # Main: 1 ARCHIVO POR PROCESO, con tantas hojas como haga falta
 # -------------------------
 def main():
-    cfg = json.loads(Path("configs/config.json").read_text(encoding="utf-8"))
+    #cfg = json.loads(Path("configs/config.json").read_text(encoding="utf-8"))
+    cfg_global = json.loads(Path("configs/config.json").read_text(encoding="utf-8"))
+    cfg = cfg_global
 
-    root = Path(cfg["input_root"])
+
+    #root = Path(cfg["input_root"])
+    root = Path(cfg_global["input_root"])
     print(root)  # para que veas rápidamente que está bien seteado
 
     if not root.exists():
         raise SystemExit(f"No existe input_root: {root}")
 
-    template_path = Path(cfg["output_template"])
-    if not template_path.exists():
-        raise SystemExit(f"No encuentro la plantilla de salida: {template_path}")
+
 
     calc_template = Path(cfg.get("calc_template", "CALCULADORA_DE_EXPERIENCIA.xlsx"))
     export_calc = bool(cfg.get("export_calculadora", True))
@@ -347,6 +364,12 @@ def main():
 
     for proceso in procesos:
         in_dir, out_dir = get_in_out_dirs(root, proceso)
+        
+        template_path = resolve_template_for_proceso(root, proceso, cfg_global)
+        #template_path = Path(cfg["output_template"])
+        if not template_path.exists():
+            log_file_append(debug_log, f"[WARN] No hay plantilla local; usando default: {template_path}")
+
 
         # Si no existe entrada, saltar
         if not in_dir.exists():
@@ -359,6 +382,8 @@ def main():
         ensure_dir(calculadoras_dir)
 
         debug_log = out_dir / "debug_run.log"
+        log_file_append(debug_log, f"[CFG] plantilla_proceso: {template_path}")
+
         if debug_log.exists():
             debug_log.unlink(missing_ok=True)
 

@@ -1,0 +1,67 @@
+{
+  "input_root": "D:\\Acciones_Inversion\\1.8.2-SINF\\ProcesoSelección\\",
+  "output_template": "Formato_Salida_Expresion_Interes.xlsx",
+  "calc_template": "CALCULADORA_DE_EXPERIENCIA.xlsx",
+  "max_postulantes_por_cuadro": 50,
+  "processed_mode": "copy",
+  "max_postulantes_por_hoja": 50,
+  "criterios": {
+    "formacion": {
+      "row": 6,
+      "cumple_keywords": [
+        "BACHILLER",
+        "TITULO",
+        "EGRESADO"
+      ],
+      "detalle_template": "TITULO: {titulo} | BACHILLER: {bachiller} | EGRESADO: {egresado}"
+    },
+    "cursos": {
+      "rows": [
+        9,
+        10,
+        11
+      ],
+      "scrum_keywords": [
+        "SCRUM",
+        "RUP",
+        "AGILE",
+        "KANBAN"
+      ],
+      "ti_keywords": [
+        "DESARROLLO",
+        "PROGRAMACION",
+        "PROGRAMACIÓN",
+        "SOFTWARE",
+        "TI",
+        "TECNOLOG",
+        "BASE DE DATOS",
+        "ORACLE",
+        "JAVA"
+      ]
+    },
+    "exp_general": {
+      "rows": [
+        14,
+        15
+      ],
+      "umbral_anios_1": 5
+    },
+    "exp_especifica": {
+      "rows": [
+        18,
+        19
+      ],
+      "umbral_anios_1": 4,
+      "java_keywords": [
+        "JAVA"
+      ],
+      "oracle_keywords": [
+        "ORACLE"
+      ]
+    }
+  },
+  "pdf": {
+    "use_ocr": false
+  },
+  "export_calculadora": true
+}

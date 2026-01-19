@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# VSCode / IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Outputs generados
+**/011. INSTALACIÓN DE COMITÉ/**
+**/procesados/**
+**/calculadoras/**
+**/_debug_pdfs/**
+
+# CSVs de ejecución
+**/consolidado.csv
+**/log.csv
+
+# Archivos temporales de Excel
+~$*.xlsx
+~$*.xlsm
+
+# Datos reales (NO subir)
+**/009. EDI RECIBIDA/**
+
+# Plantillas sensibles (si prefieres no subirlas)
+# Formato_Expresion_Interes.xlsx
+# Formato_Salida_Expresion_Interes.xlsx
+# CALCULADORA DE EXPERIENCIA (nombre del consultor).xlsx

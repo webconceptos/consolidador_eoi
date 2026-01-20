@@ -60,6 +60,23 @@
       ]
     }
   },
+  "slot_style": {
+    "fill_base": "FFF2CC",
+    "fill_score": "D9E1F2",
+    "border_color": "000000",
+    "font_name": "Calibri",
+    "font_size": 10,
+    "header_font_size": 11,
+    "start_row": 3,
+    "end_row": 22,
+    "base_col_width": 34,
+    "score_col_width": 14,
+    "set_row_heights": true,
+    "row3_height": 18,
+    "row6_height": 34,
+    "row13_height": 20,
+    "row17_height": 20
+  },
   "pdf": {
     "use_ocr": false
   },

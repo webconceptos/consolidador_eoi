@@ -32,6 +32,15 @@ from pathlib import Path
 from datetime import datetime, date
 from typing import Dict, Any, List, Optional
 
+
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+
 from parsers.eoi_excel import parse_eoi_excel
 from parsers.eoi_pdf import parse_eoi_pdf
 

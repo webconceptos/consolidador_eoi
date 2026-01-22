@@ -29,6 +29,14 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Tuple
 
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+
 IN_FOLDER_NAME = "009. EDI RECIBIDAS"
 OUT_FOLDER_NAME = "011. INSTALACIÓN DE COMITÉ"
 

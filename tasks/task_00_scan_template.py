@@ -35,6 +35,56 @@ OUT_CONFIG_NAME = "config_layout.json"
 # -------------------------
 # Helpers
 # -------------------------
+
+
+def cell_text(ws, r: int, c: int) -> str:
+    return norm(str(ws.cell(row=r, column=c).value or ""))
+
+def is_int_like(s: str) -> bool:
+    s = norm(s)
+    return bool(re.fullmatch(r"\d+", s))
+
+def find_first_numeric_down(ws, start_row: int, col: int, max_rows: int = 250) -> int | None:
+    """
+    Busca desde start_row hacia abajo la primera fila donde la columna `col`
+    contenga un número (Nro de experiencia).
+    """
+    for r in range(start_row, min(ws.max_row, max_rows) + 1):
+        v = cell_text(ws, r, col)
+        if is_int_like(v):
+            return r
+    return None
+
+def find_section_end_row(ws, start_row: int, stop_at_rows: list[int] | None = None, max_rows: int = 250) -> int:
+    """
+    Determina el fin de una sección:
+    - si existe una siguiente sección (stop_at_rows), termina en (min(stop)-1)
+    - si no, termina cuando detecta un "vacío sostenido" (ej. 8 filas seguidas sin Nro)
+    """
+    stop_at_rows = [r for r in (stop_at_rows or []) if isinstance(r, int) and r > 0]
+    stop_at = min(stop_at_rows) if stop_at_rows else None
+
+    if stop_at and stop_at > start_row:
+        return stop_at - 1
+
+    empty_streak = 0
+    last_good = start_row
+
+    for r in range(start_row, min(ws.max_row, max_rows) + 1):
+        v = cell_text(ws, r, 3)  # col C
+        if v.strip() == "":
+            empty_streak += 1
+        else:
+            empty_streak = 0
+            last_good = r
+
+        if empty_streak >= 8:
+            return last_good
+
+    return last_good
+
+
+
 def ts():
     return datetime.now().isoformat(timespec="seconds")
 
@@ -73,6 +123,25 @@ def read_row_values(ws, row: int, max_col: int = 80):
         v = ws.cell(row=row, column=c).value
         vals.append("" if v is None else str(v))
     return vals
+
+def row_text(ws, r: int, max_cols: int = 8) -> str:
+    return " ".join(norm(str(ws.cell(row=r, column=c).value or "")) for c in range(1, max_cols + 1))
+
+def find_first_row_down(ws, start_row: int, patterns: list[str], max_rows: int = 120, max_cols: int = 8) -> int | None:
+    """
+    Busca desde start_row hacia abajo la primera fila cuyo texto (A..max_cols)
+    haga match con alguno de los patrones.
+    """
+    for r in range(start_row, min(ws.max_row, max_rows) + 1):
+        t = row_text(ws, r, max_cols=max_cols)
+        if not t.strip():
+            continue
+        for p in patterns:
+            if re.search(p, t, flags=re.IGNORECASE):
+                return r
+    return None
+
+
 
 def find_process_template(out_dir: Path) -> Path | None:
     """
@@ -202,6 +271,73 @@ def scan_one_template(template_path: Path):
     slots = detect_slots(ws)
     label_rows = find_label_rows(ws)
 
+    section_rows = {}
+
+    # --- Formación Académica ---
+    if "formacion" in label_rows:
+        # si el rótulo está en fila X, la data suele estar en X+1
+        section_rows["fa_row"] = int(label_rows["formacion"]) + 1
+
+    # --- Estudios Complementarios ---
+    if "complementarios" in label_rows:
+        start = int(label_rows["complementarios"])
+        ec_base = find_first_row_down(
+            ws,
+            start_row=start,
+            patterns=[r"\bb\s*\.\s*1\b"],   # b.1
+            max_rows=250,
+            max_cols=8
+        )
+        section_rows["ec_row_base"] = int(ec_base) if ec_base is not None else (start + 1)
+
+    # --- Experiencia General ---
+    if "exp_general" in label_rows:
+        r_label = int(label_rows["exp_general"])
+
+        # buscamos la primera fila REAL de data: Nro (col C) debajo del rótulo
+        exp_start = find_first_numeric_down(ws, start_row=r_label, col=3, max_rows=350)
+        # fallback: si no encuentra nro, usa rótulo+1
+        exp_start = exp_start if exp_start is not None else (r_label + 1)
+        section_rows["exp_general_start_row"] = exp_start
+
+        # Para fin, usamos la siguiente sección más cercana si existe:
+        candidates_stop = []
+        if "exp_especifica" in label_rows:
+            candidates_stop.append(int(label_rows["exp_especifica"]))
+        if "entrevista" in label_rows:
+            candidates_stop.append(int(label_rows["entrevista"]))
+        if "puntaje_total" in label_rows:
+            candidates_stop.append(int(label_rows["puntaje_total"]))
+
+        section_rows["exp_general_end_row"] = find_section_end_row(
+            ws,
+            start_row=exp_start,
+            stop_at_rows=candidates_stop,
+            max_rows=350
+        )
+
+    # --- Experiencia Específica (si la necesitas también) ---
+    if "exp_especifica" in label_rows:
+        r_label = int(label_rows["exp_especifica"])
+        exp_start = find_first_numeric_down(ws, start_row=r_label, col=3, max_rows=350)
+        exp_start = exp_start if exp_start is not None else (r_label + 1)
+        section_rows["exp_especifica_start_row"] = exp_start
+
+        candidates_stop = []
+        if "entrevista" in label_rows:
+            candidates_stop.append(int(label_rows["entrevista"]))
+        if "puntaje_total" in label_rows:
+            candidates_stop.append(int(label_rows["puntaje_total"]))
+
+        section_rows["exp_especifica_end_row"] = find_section_end_row(
+            ws,
+            start_row=exp_start,
+            stop_at_rows=candidates_stop,
+            max_rows=350
+        )
+
+
+
     layout = {
         "template_file": template_path.name,
         "sheet_base": sheet_name,
@@ -211,8 +347,11 @@ def scan_one_template(template_path: Path):
         "max_postulantes_por_hoja_detectado": len(slots),
         "slots": slots,
         "label_rows_detectados": label_rows,
+        "section_rows": section_rows,
         "generated_at": ts(),
     }
+    #layout["section_rows"] = section_rows
+
     return layout
 
 

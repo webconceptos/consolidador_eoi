@@ -6,6 +6,8 @@ import csv
 import json
 import shutil
 from pathlib import Path
+from openpyxl.cell.cell import MergedCell
+
 from datetime import datetime
 
 from openpyxl import load_workbook
@@ -239,7 +241,6 @@ def choose_one_file_per_postulante_folder(in_dir: Path):
     chosen.sort(key=lambda x: str(x).lower())
     return chosen
 
-
 def find_ec_detail_rows(ws, col=6, rmin=1, rmax=200):
     """
     Busca filas donde en la columna F diga:
@@ -295,65 +296,6 @@ def fill_estudios_complementarios(ws, base_col, data, debug_log=None):
 # -------------------------
 # Write Stage 1 (DP)
 # -------------------------
-def write_postulante_stage1_old(ws, data: dict, cfg: dict, styles: dict, debug_log: Path):
-
-    print("inicia write")
-    max_slots = int(cfg.get("max_postulantes_por_hoja", 20))
-    slot_start_col = int(cfg.get("slot_start_col", 6))
-    slot_step_cols = int(cfg.get("slot_step_cols", 2))
-    header_row = int(cfg.get("slot_header_row", 3))
-
-    print("WRITE_POSTULANTE_STAGE1")
-
-    slot = next_free_slot(ws, max_slots=max_slots, slot_start_col=slot_start_col, slot_step_cols=slot_step_cols, header_row=header_row)
-    if slot is None:
-        return False, "NO_HAY_SLOT"
-
-    base_col, score_col = slot_columns(slot, slot_start_col, slot_step_cols)
-
-    apply_slot_format(ws, base_col, score_col, cfg, styles)
-
-    # Row 3 header name
-    display_name = norm(data.get("nombre_full", ""))
-    if not display_name:
-        dni_fb = norm(data.get("dni", ""))
-        src_fb = norm(data.get("source_label", "")) or norm(data.get("source_file", ""))
-        display_name = dni_fb or src_fb or "SIN_NOMBRE"
-    ws.cell(row=header_row, column=base_col).value = display_name
-
-    # Row 6 DP summary
-    dni = norm(data.get("dni", ""))
-    cel = norm(data.get("celular", ""))
-    email = norm(data.get("email", ""))
-
-    parts = [display_name]
-    if dni: parts.append(f"DNI: {dni}")
-    if cel: parts.append(f"Cel: {cel}")
-    if email: parts.append(f"Email: {email}")
-
-    print("CABECERA")
-    print(parts)
-    
-    ##CABECERA
-    ws.cell(row=header_row, column=base_col).value = " | ".join(parts)
-    
-
-    ##FORMACIÓN ACADÉMICA
-    #fa = norm(data.get("formacion_resumen", ""))
-    fa = data.get("formacion_resumen")
-    
-    print("FORMACIÓN ACADÉMICA")
-    print(fa)
-    print("Entro hasta aquí")
-    # Si no hay resumen, deja al menos algo visible
-    if not fa:
-        fa = "SIN DATOS DE FORMACIÓN (revisar tabla 47–56)"
-    ws.cell(row=6, column=base_col).value = fa
-    
-
-    log_append(debug_log, f"[WRITE] {ws.title} SLOT={slot} name='{display_name}' dni='{dni}'", also_print=False)
-    return True, f"SLOT_{slot}"
-
 def is_cell_filled(v) -> bool:
     return v is not None and str(v).strip() != ""
 
@@ -376,146 +318,74 @@ def format_course_line(it: dict) -> str:
 
     return "• " + " | ".join(parts).strip()
 
+def write_value_safe_old(ws, row: int, col: int, value):
+    """
+    Escribe en (row,col) aunque sea celda combinada.
+    Si cae en una MergedCell (read-only), busca el top-left del merge y escribe ahí.
+    """
+    cell = ws.cell(row=row, column=col)
 
-def write_postulante_stage1_old2(ws, data: dict, cfg: dict, styles: dict, debug_log: Path):
-    # -------------------------
-    # Config slot
-    # -------------------------
-    max_slots      = int(cfg.get("max_postulantes_por_hoja", 20))
-    slot_start_col = int(cfg.get("slot_start_col", 6))   # F
-    slot_step_cols = int(cfg.get("slot_step_cols", 2))   # cada postulante 2 cols (detalle/puntaje)
-    header_row     = int(cfg.get("slot_header_row", 3))  # fila 3
+    # Caso normal
+    if not isinstance(cell, MergedCell):
+        cell.value = value
+        return (row, col)
 
-    log_append(debug_log, f"[WRITE_STAGE1] ws='{ws.title}' max_slots={max_slots} start_col={slot_start_col} step={slot_step_cols} header_row={header_row}", also_print=False)
+    # Caso merged: hallar rango que contiene esta celda
+    for r in ws.merged_cells.ranges:
+        if r.min_row <= row <= r.max_row and r.min_col <= col <= r.max_col:
+            tl = ws.cell(row=r.min_row, column=r.min_col)
+            tl.value = value
+            return (r.min_row, r.min_col)
 
-    # -------------------------
-    # Encuentra slot libre
-    # -------------------------
-    slot = next_free_slot(
-        ws,
-        max_slots=max_slots,
-        slot_start_col=slot_start_col,
-        slot_step_cols=slot_step_cols,
-        header_row=header_row
-    )
-    if slot is None:
-        log_append(debug_log, f"[WRITE_STAGE1] NO_HAY_SLOT ws='{ws.title}'", also_print=False)
-        return False, "NO_HAY_SLOT"
+    # Si por alguna razón no se encontró el rango, no escribimos
+    raise RuntimeError(f"No se encontró rango merged para celda ({row},{col})")
 
-    base_col, score_col = slot_columns(slot, slot_start_col, slot_step_cols)
+def get_top_left_cell(ws, row: int, col: int):
+    """Si (row,col) cae dentro de un merged range, retorna la celda top-left."""
+    for r in ws.merged_cells.ranges:
+        if r.min_row <= row <= r.max_row and r.min_col <= col <= r.max_col:
+            return ws.cell(row=r.min_row, column=r.min_col)
+    return ws.cell(row=row, column=col)
 
-    # -------------------------
-    # Anti sobrescritura (real)
-    # -------------------------
-    prev = ws.cell(row=header_row, column=base_col).value
-    if is_cell_filled(prev) and "NOMBRE DEL CONSULTOR" not in str(prev).upper():
-        # OJO: esto ocurre si next_free_slot no detectó bien porque el template trae cosas raras
-        log_append(debug_log, f"[WRITE_STAGE1] SLOT_OCUPADO slot={slot} prev='{prev}'", also_print=False)
-        return False, f"SLOT_OCUPADO_{slot}"
+def clear_value_safe(ws, row: int, col: int):
+    cell = get_top_left_cell(ws, row, col)
+    cell.value = None
+    return cell
 
-    # -------------------------
-    # Aplica formato del slot
-    # -------------------------
-    apply_slot_format(ws, base_col, score_col, cfg, styles)
+def _anchor_of_merged(ws, row: int, col: int):
+    """
+    Si (row,col) cae dentro de un rango combinado, devuelve (min_row, min_col)
+    del rango (la celda "real" editable). Si no, devuelve (row,col).
+    """
+    coord = ws.cell(row=row, column=col).coordinate
+    for r in ws.merged_cells.ranges:
+        if coord in r:
+            return r.min_row, r.min_col
+    return row, col
 
-    # -------------------------
-    # Cabecera (fila 3 del slot)
-    # -------------------------
-    display_name = norm(data.get("nombre_full", ""))
-    if not display_name:
-        dni_fb = norm(data.get("dni", ""))
-        src_fb = norm(data.get("source_label", "")) or norm(data.get("source_file", ""))
-        display_name = dni_fb or src_fb or "SIN_NOMBRE"
+def write_value_safe(ws, row: int, col: int, value):
+    """
+    Escribe solo si:
+    - no es merged, o
+    - es merged PERO el anchor (min_row/min_col) coincide con (row,col).
+    Si el anchor está en otra fila, NO escribe (evita malograr otra sección).
+    """
+    coord = ws.cell(row=row, column=col).coordinate
 
-    dni   = norm(data.get("dni", ""))
-    cel   = norm(data.get("celular", ""))
-    email = norm(data.get("email", ""))
+    for r in ws.merged_cells.ranges:
+        if coord in r:
+            # anchor real
+            ar, ac = r.min_row, r.min_col
+            if (ar, ac) != (row, col):
+                # ⚠️ No escribas: estarías escribiendo en otra fila
+                return False
+            ws.cell(row=ar, column=ac).value = value
+            return True
 
-    parts = [display_name]
-    if dni:   parts.append(f"DNI: {dni}")
-    if cel:   parts.append(f"Cel: {cel}")
-    if email: parts.append(f"Email: {email}")
+    ws.cell(row=row, column=col).value = value
+    return True
 
-    header_text = " | ".join(parts)
-    ws.cell(row=header_row, column=base_col).value = header_text
-
-    log_append(debug_log, f"[WRITE_STAGE1] HEADER slot={slot} col={base_col} text='{header_text}'", also_print=False)
-
-    # -------------------------
-    # FORMACIÓN ACADÉMICA (fila 6 del template)
-    # -------------------------
-    fa = data.get("formacion_resumen") or ""
-    fa = norm(fa)
-
-    if not fa:
-        fa = "SIN DATOS DE FORMACIÓN (revisar tabla 47–56)"
-
-    ws.cell(row=6, column=base_col).value = fa
-    log_append(debug_log, f"[WRITE_STAGE1] FA row=6 col={base_col} value='{fa[:120]}'", also_print=False)
-
-    # =========================
-    # ESTUDIOS COMPLEMENTARIOS
-    # =========================
-    blocks = data.get("estudios_complementarios", {}).get("blocks", []) or []
-
-    # EJEMPLO: si en tu template:
-    # b.1 se escribe en fila 8
-    # b.2 se escribe en fila 9
-    # b.3 se escribe en fila 10
-    # (ajústalo según tu template real)
-    ec_rows = [8, 9, 10]
-
-    for i, row_out in enumerate(ec_rows):
-        if i >= len(blocks):
-            # si no hay más bloques, limpia o deja vacío
-            ws.cell(row=row_out, column=base_col).value = ""
-            continue
-
-        # 🔥 AQUÍ VA EXACTAMENTE TU CÓDIGO
-        items = blocks[i].get("items", []) or []
-        lines = [
-            format_course_line(x)
-            for x in items
-            if (norm(x.get("centro", "")) or norm(x.get("capacitacion", "")))
-        ]
-        resumen_multiline = "\n".join(lines).strip() if lines else "(sin cursos declarados)"
-
-        cell = ws.cell(row=row_out, column=base_col)
-        cell.value = resumen_multiline
-        cell.alignment = cell.alignment.copy(wrap_text=True, vertical="top")
-
-
-    log_append(debug_log, f"[WRITE_STAGE1] EC detail_rows={detail_rows} blocks={len(blocks)}", also_print=False)
-
-    # Escribe resúmenes
-    if detail_rows and blocks:
-        for i, r in enumerate(detail_rows):
-            if i >= len(blocks):
-                break
-            resumen = norm(blocks[i].get("resumen", ""))
-            if not resumen:
-                resumen = "(sin cursos declarados)"
-            #ws.cell(row=r, column=base_col).value = resumen
-            cell = ws.cell(row=r, column=base_col)
-            cell.value = resumen_multiline
-
-            # Wrap + alineación arriba para que se lea bien
-            cell.alignment = cell.alignment.copy(wrap_text=True, vertical="top")
-
-            log_append(debug_log, f"[WRITE_STAGE1] EC write block={blocks[i].get('id','?')} -> row={r} col={base_col}", also_print=False)
-
-    # Si hay rows pero no blocks, deja señal visible
-    if detail_rows and not blocks:
-        ws.cell(row=detail_rows[0], column=base_col).value = "(no hay cursos en el input)"
-        log_append(debug_log, f"[WRITE_STAGE1] EC no blocks, wrote placeholder row={detail_rows[0]}", also_print=False)
-
-    # -------------------------
-    # FIN
-    # -------------------------
-    log_append(debug_log, f"[WRITE_STAGE1] OK ws='{ws.title}' slot={slot} base_col={base_col}", also_print=False)
-    return True, f"SLOT_{slot}"
-
-def write_postulante_stage1(ws, data: dict, cfg: dict, styles: dict, debug_log: Path):
+def write_postulante_stage1_OLD(ws, data: dict, cfg: dict, styles: dict, debug_log: Path):
     """
     Stage 1 (carga de datos):
     - Cabecera (fila header_row): Nombre | DNI | Cel | Email
@@ -591,10 +461,13 @@ def write_postulante_stage1(ws, data: dict, cfg: dict, styles: dict, debug_log: 
     c_fa.value = fa
     c_fa.alignment = c_fa.alignment.copy(wrap_text=True, vertical="top")
 
+
+
     # ==========================
     # ESTUDIOS COMPLEMENTARIOS (EC) por bloque b.1..b.N
     # ==========================
     ec = data.get("estudios_complementarios", {}) or {}
+    
     blocks = ec.get("blocks", []) or []
 
     ROW_BASE_EC = int(cfg.get("row_ec_base", 8))  # por defecto b.1 empieza en fila 8
@@ -622,8 +495,11 @@ def write_postulante_stage1(ws, data: dict, cfg: dict, styles: dict, debug_log: 
 
     # Limpia filas EC del slot (para no dejar basura de ejecuciones previas)
     # (limpiamos 10 filas por seguridad)
+    #for rr in range(ROW_BASE_EC, ROW_BASE_EC + 10):
+        #ws.cell(row=rr, column=base_col).value = None
     for rr in range(ROW_BASE_EC, ROW_BASE_EC + 10):
-        ws.cell(row=rr, column=base_col).value = None
+        write_value_safe(ws, rr, base_col, None)
+
         # OJO: no toco score_col todavía (por ahora)
 
     # Escribe cada bloque en su fila
@@ -636,8 +512,8 @@ def write_postulante_stage1(ws, data: dict, cfg: dict, styles: dict, debug_log: 
         lines = [format_course_line(x) for x in items if (norm(x.get("centro","")) or norm(x.get("capacitacion","")))]
         resumen = "\n".join(lines).strip() if lines else "(sin cursos declarados)"
 
-        ws.cell(row=rr, column=base_col).value = resumen
-
+        #ws.cell(row=rr, column=base_col).value = resumen
+        write_value_safe(ws, rr, base_col, resumen)
         # Asegura que se vea multilinea
         cell = ws.cell(row=rr, column=base_col)
         if cell.alignment:
@@ -662,6 +538,409 @@ def write_postulante_stage1(ws, data: dict, cfg: dict, styles: dict, debug_log: 
         debug_log,
         f"[WRITE_STAGE1] sheet='{ws.title}' slot={slot} base_col={base_col} "
         f"name='{display_name}' dni='{dni}' fa_len={len(fa)} blocks={len(blocks)}",
+        also_print=False
+    )
+
+    return True, f"SLOT_{slot}"
+
+def write_postulante_stage1(ws, data: dict, cfg: dict, styles: dict, debug_log: Path):
+    """
+    STAGE 1 (Carga de datos al template):
+    1) Datos Personales   -> Cabecera (header_row) en la columna del slot
+    2) Formación Académica-> Fila fa_row (por defecto 6)
+    3) Estudios Complementarios (EC) -> Filas ec_rows (por defecto 8,9,10,11 para b.1..b.4)
+
+    ⚠️ Nota crítica (openpyxl + celdas combinadas):
+    - Si intentas escribir dentro de una celda combinada que NO sea el "anchor" (top-left),
+      openpyxl devuelve un MergedCell y su .value es read-only.
+    - Para evitar "malograr" otras filas (ej: que EC termine escribiendo sobre FA),
+      write_value_safe() SOLO escribe si:
+        a) No es merged, o
+        b) Es merged y la celda destino ES el anchor del merge.
+      Caso contrario, NO escribe y deja log de warning (debug).
+    """
+
+    # ============================================================
+    # 0) IMPORTS LOCALES (por si este archivo está modularizado)
+    # ============================================================
+    import re
+    import json
+    from openpyxl.styles import Alignment
+
+    # ============================================================
+    # 1) VARIABLES / CONFIG
+    # ============================================================
+    max_slots = int(cfg.get("max_postulantes_por_hoja", 20))
+    slot_start_col = int(cfg.get("slot_start_col", 6))
+    slot_step_cols = int(cfg.get("slot_step_cols", 2))
+    header_row = int(cfg.get("slot_header_row", 3))
+
+    # Formación Académica en el template (por defecto fila 6)
+    fa_row = int(cfg.get("fa_row", 6))
+
+    # Estudios Complementarios: por defecto b.1..b.4 en filas 8..11
+    ec_rows = cfg.get("ec_rows", [8, 9, 10, 11])
+    if isinstance(ec_rows, str):
+        ec_rows = [int(x.strip()) for x in ec_rows.split(",") if x.strip()]
+
+    # ============================================================
+    # 2) HELPERS (merge-safe + prints estructurados)
+    # ============================================================
+    def _safe_json(obj) -> str:
+        """Pretty-print robusto (evita romper por tipos raros)."""
+        try:
+            return json.dumps(obj, ensure_ascii=False, indent=2, default=str)
+        except Exception:
+            return str(obj)
+
+    def _cell_is_in_merged_range(cell_coord: str):
+        """Retorna el merged range (openpyxl range) si coord pertenece, sino None."""
+        for rng in ws.merged_cells.ranges:
+            if cell_coord in rng:
+                return rng
+        return None
+
+    def write_value_safe(row: int, col: int, value, label: str = ""):
+        """
+        Escribe value en (row,col) SOLO si:
+        - la celda no es merged, o
+        - la celda es merged y (row,col) es el anchor del merge (top-left).
+        Si no se puede, no escribe y lo reporta.
+        Retorna siempre el "cell" de ws.cell(row,col) para que puedas setear alignment,
+        pero ojo: si es MergedCell no debes tocar .value directamente.
+        """
+        cell = ws.cell(row=row, column=col)
+        coord = cell.coordinate
+        rng = _cell_is_in_merged_range(coord)
+
+        if rng:
+            anchor = (rng.min_row, rng.min_col)
+            if (row, col) != anchor:
+                # NO escribimos para no pisar otra fila/columna por anchor "lejano"
+                print(f"[WARN] write_value_safe SKIP (MergedCell read-only) "
+                      f"{label} coord={coord} in_merge={rng} anchor={anchor} value_preview='{str(value)[:50]}'")
+                return cell  # devolvemos cell (puede ser MergedCell)
+            # escribimos en el anchor real:
+            anchor_cell = ws.cell(row=rng.min_row, column=rng.min_col)
+            anchor_cell.value = value
+            return anchor_cell  # devolvemos el anchor (es escribible)
+
+        # No merge -> escritura directa
+        cell.value = value
+        return cell
+
+    def clear_value_safe(row: int, col: int, label: str = ""):
+        """Limpieza merge-safe (respeta la misma lógica de write_value_safe)."""
+        write_value_safe(row, col, None, label=label)
+
+    def apply_wrap(cell, vertical="top"):
+        """Aplica wrap_text y vertical sin romper si no hay alignment previo."""
+        if cell is None:
+            return
+        if getattr(cell, "alignment", None):
+            cell.alignment = cell.alignment.copy(wrap_text=True, vertical=vertical)
+        else:
+            cell.alignment = Alignment(wrap_text=True, vertical=vertical)
+
+    def block_index(block_id: str) -> int:
+        """Convierte 'b.1' -> 1, 'b.2' -> 2, etc."""
+        m = re.search(r"\b[bB]\s*\.\s*(\d+)\b", str(block_id))
+        return int(m.group(1)) if m else 1
+
+    def is_header_row(it: dict) -> bool:
+        """
+        Detecta filas 'cabecera' que aparecen dentro de items por arte del parse:
+        - nro: No. / N° / Nº
+        - centro: Centro de estudios / Nombre de la Entidad ó Empresa
+        - cap: Capacitación / Nombre del Proyecto
+        - fecha_inicio: "Fecha de Inicio"
+        """
+        nro = norm(it.get("nro", "")).strip().lower()
+        centro = norm(it.get("centro", "")).strip().lower()
+        cap = norm(it.get("capacitacion", "")).strip().lower()
+        fi = norm(it.get("fecha_inicio", "")).strip().lower()
+
+        if nro in ("no.", "n°", "nº", "nro", "nro."):
+            return True
+        if centro in ("centro de estudios", "nombre de la entidad ó empresa"):
+            return True
+        if cap in ("capacitacion", "capacitación", "nombre del proyecto"):
+            return True
+        if "fecha de inicio" in fi:
+            return True
+        return False
+
+    def format_course_line(x: dict) -> str:
+        """Línea humana: Centro | Curso | FechaIni - FechaFin | Nh"""
+        centro = norm(x.get("centro", ""))
+        cap = norm(x.get("capacitacion", ""))
+        fi = norm(x.get("fecha_inicio", ""))
+        ff = norm(x.get("fecha_fin", ""))
+        horas = x.get("horas", "")
+
+        out = []
+        if centro:
+            out.append(centro)
+        if cap:
+            out.append(cap)
+
+        fechas = " - ".join([p for p in [fi, ff] if p]).strip()
+        if fechas:
+            out.append(fechas)
+
+        h = str(horas).strip() if horas is not None else ""
+        if h and h not in ("0", "0.0"):
+            if not h.lower().endswith("h"):
+                h = f"{h}h"
+            out.append(h)
+
+        return " | ".join(out).strip()
+
+    # ============================================================
+    # 3) HALLAR SLOT LIBRE
+    # ============================================================
+    slot = next_free_slot(
+        ws,
+        max_slots=max_slots,
+        slot_start_col=slot_start_col,
+        slot_step_cols=slot_step_cols,
+        header_row=header_row,
+    )
+    if slot is None:
+        return False, "NO_HAY_SLOT"
+
+    base_col, score_col = slot_columns(slot, slot_start_col, slot_step_cols)
+
+    # Formateo del slot (fondos, bordes, widths, wrap base, etc.)
+    apply_slot_format(ws, base_col, score_col, cfg, styles)
+
+    # ============================================================
+    # 4) PRINT ESTRUCTURADO: RESUMEN DEL INPUT (DATA)
+    # ============================================================
+    # (No imprimimos TODO el dict gigante, imprimimos un resumen útil)
+    ec_dbg = data.get("estudios_complementarios") or {}
+    blocks_dbg = (ec_dbg.get("blocks") or [])
+    debug_payload = {
+        "sheet": ws.title,
+        "slot": slot,
+        "base_col": base_col,
+        "score_col": score_col,
+        "cfg": {
+            "header_row": header_row,
+            "fa_row": fa_row,
+            "ec_rows": ec_rows,
+            "max_slots": max_slots,
+            "slot_start_col": slot_start_col,
+            "slot_step_cols": slot_step_cols,
+        },
+        "datos_personales": {
+            "nombre_full": data.get("nombre_full", ""),
+            "dni": data.get("dni", ""),
+            "celular": data.get("celular", ""),
+            "email": data.get("email", ""),
+            "source_label": data.get("source_label", ""),
+            "source_file": data.get("source_file", ""),
+        },
+        "formacion_academica": {
+            "formacion_resumen_len": len(norm(data.get("formacion_resumen") or "")),
+            "formacion_resumen_preview": (norm(data.get("formacion_resumen") or "")[:120] + "…")
+                                         if len(norm(data.get("formacion_resumen") or "")) > 120
+                                         else norm(data.get("formacion_resumen") or ""),
+        },
+        "estudios_complementarios": {
+            "blocks_count": len(blocks_dbg),
+            "blocks_ids": [b.get("id") for b in blocks_dbg],
+            "total_horas": ec_dbg.get("total_horas", 0),
+        }
+    }
+    print("[STAGE1 DEBUG] INPUT SUMMARY:\n" + _safe_json(debug_payload))
+
+    # ============================================================
+    # 5) SECCIÓN 1: DATOS PERSONALES (CABECERA)
+    # ============================================================
+    # Armamos el texto visible de cabecera:
+    display_name = norm(data.get("nombre_full", ""))
+    if not display_name:
+        dni_fb = norm(data.get("dni", ""))
+        src_fb = norm(data.get("source_label", "")) or norm(data.get("source_file", ""))
+        display_name = dni_fb or src_fb or "SIN_NOMBRE"
+
+    dni = norm(data.get("dni", ""))
+    cel = norm(data.get("celular", ""))
+    email = norm(data.get("email", ""))
+
+    parts = [display_name]
+    if dni:
+        parts.append(f"DNI: {dni}")
+    if cel:
+        parts.append(f"Cel: {cel}")
+    if email:
+        parts.append(f"Email: {email}")
+
+    header_text = " | ".join(parts).strip()
+
+    print("[STAGE1 DEBUG] DATOS PERSONALES (CABECERA):\n" + _safe_json({
+        "row": header_row,
+        "col": base_col,
+        "header_text": header_text
+    }))
+
+    c_header = write_value_safe(header_row, base_col, header_text, label="CABECERA")
+    apply_wrap(c_header, vertical="center")
+
+    # ============================================================
+    # 6) SECCIÓN 2: FORMACIÓN ACADÉMICA (FA)
+    # ============================================================
+    fa = norm(data.get("formacion_resumen") or "")
+    if not fa:
+        fa = "SIN DATOS DE FORMACIÓN (revisar tabla 47–56)"
+
+    print("[STAGE1 DEBUG] FORMACIÓN ACADÉMICA:\n" + _safe_json({
+        "row": fa_row,
+        "col": base_col,
+        "fa_len": len(fa),
+        "fa_preview": (fa[:160] + "…") if len(fa) > 160 else fa,
+    }))
+
+    c_fa = write_value_safe(fa_row, base_col, fa, label="FORMACION_ACADEMICA")
+    apply_wrap(c_fa, vertical="top")
+
+    # ============================================================
+    # 7) SECCIÓN 3: ESTUDIOS COMPLEMENTARIOS (EC)
+    # ============================================================
+    ec = data.get("estudios_complementarios") or {}
+    blocks = ec.get("blocks") or []
+
+    # base: si no usas ec_rows, se usa row_ec_base
+    ROW_BASE_EC = int(cfg.get("row_ec_base", ec_rows[0] if ec_rows else 8))
+
+    print("[STAGE1 DEBUG] ESTUDIOS COMPLEMENTARIOS (CONFIG):\n" + _safe_json({
+        "ROW_BASE_EC": ROW_BASE_EC,
+        "ec_rows": ec_rows,
+        "blocks_count": len(blocks),
+        "blocks_ids": [b.get("id") for b in blocks],
+    }))
+
+    # 7.1 Limpieza segura SOLO de las filas EC definidas
+    #     (esto evita limpiar accidentalmente FA u otras filas del template)
+    if ec_rows:
+        for rr in ec_rows:
+            clear_value_safe(rr, base_col, label=f"EC_CLEAR_r{rr}")
+    else:
+        for rr in range(ROW_BASE_EC, ROW_BASE_EC + 10):
+            clear_value_safe(rr, base_col, label=f"EC_CLEAR_r{rr}")
+
+    # 7.2 Escritura por bloque b.1..b.N -> a su fila correspondiente
+    for b in blocks:
+        bid = b.get("id", "")
+        idx = block_index(bid)  # 1..N
+
+        # decide fila destino según ec_rows
+        if ec_rows and 1 <= idx <= len(ec_rows):
+            rr = ec_rows[idx - 1]
+        else:
+            rr = ROW_BASE_EC + (idx - 1)
+
+        items = b.get("items") or []
+
+        # DEDUP + FILTRO DE CABECERAS + FILTRO DE VACÍOS
+        seen = set()
+        lines = []
+        for it in items:
+            if is_header_row(it):
+                continue
+            if not (norm(it.get("centro", "")) or norm(it.get("capacitacion", ""))):
+                continue
+
+            key = (
+                norm(it.get("centro", "")).lower(),
+                norm(it.get("capacitacion", "")).lower(),
+                norm(it.get("fecha_inicio", "")),
+                norm(it.get("fecha_fin", "")),
+                str(it.get("horas", "")).strip()
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+
+            lines.append(format_course_line(it))
+
+        resumen = "\n".join([x for x in lines if x]).strip()
+        if not resumen:
+            resumen = "(sin cursos declarados)"
+
+        print("[STAGE1 DEBUG] EC WRITE BLOCK:\n" + _safe_json({
+            "block_id": bid,
+            "block_idx": idx,
+            "dest_row": rr,
+            "dest_col": base_col,
+            "items_in_block": len(items),
+            "lines_written": len(lines),
+            "resumen_preview": (resumen[:180] + "…") if len(resumen) > 180 else resumen,
+        }))
+
+        c_ec = write_value_safe(rr, base_col, resumen, label=f"EC_{bid}")
+        apply_wrap(c_ec, vertical="top")
+
+    # ============================================================
+    # 8) LOG FINAL
+    # ============================================================
+    log_append(
+        debug_log,
+        f"[WRITE_STAGE1] sheet='{ws.title}' slot={slot} base_col={base_col} "
+        f"name='{display_name}' dni='{dni}' fa_len={len(fa)} blocks={len(blocks)}",
+        also_print=False
+    )
+
+    return True, f"SLOT_{slot}"
+
+def write_postulante_experiencia_general(ws, data: dict, cfg: dict, styles: dict, debug_log):
+    """
+    Writer desacoplado de EDI:
+    - Lee data["exp_general_resumen"] o data["exp_general"]["resumen"]
+    - Escribe en la plantilla usando cfg["exp_general_row"] y slot columns.
+    """
+
+    max_slots = int(cfg.get("max_postulantes_por_hoja", 20))
+    slot_start_col = int(cfg.get("slot_start_col", 6))
+    slot_step_cols = int(cfg.get("slot_step_cols", 2))
+    header_row = int(cfg.get("slot_header_row", 3))
+
+    # fila destino (detectada por task_00)
+    eg_row = int(cfg.get("exp_general_row", 12))
+
+    slot = next_free_slot(
+        ws,
+        max_slots=max_slots,
+        slot_start_col=slot_start_col,
+        slot_step_cols=slot_step_cols,
+        header_row=header_row,
+    )
+    if slot is None:
+        return False, "NO_HAY_SLOT"
+
+    base_col, score_col = slot_columns(slot, slot_start_col, slot_step_cols)
+
+    # Texto a escribir
+    eg = data.get("exp_general") or {}
+    texto = norm(data.get("exp_general_resumen") or eg.get("resumen") or "")
+    if not texto:
+        texto = "(sin experiencia general declarada)"
+
+    # Limpia solo esa celda antes de escribir
+    clear_value_safe(ws, eg_row, base_col)
+
+    cell = write_value_safe(ws, eg_row, base_col, texto)
+    cell.alignment = (cell.alignment.copy(wrap_text=True, vertical="top")
+                      if cell.alignment else Alignment(wrap_text=True, vertical="top"))
+
+    # Print estructurado (debug)
+    if cfg.get("debug", False):
+        print(f"[WRITE EG] sheet='{ws.title}' slot={slot} base_col={base_col} eg_row={eg_row} len={len(texto)} dias={data.get('exp_general_dias', 0)}")
+
+    log_append(
+        debug_log,
+        f"[WRITE_EG] sheet='{ws.title}' slot={slot} base_col={base_col} eg_row={eg_row} len={len(texto)}",
         also_print=False
     )
 

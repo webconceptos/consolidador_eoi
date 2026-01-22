@@ -12,11 +12,6 @@ En <Proceso>/011. INSTALACIÓN DE COMITÉ/
   - parse_log.csv           (OK/ERROR por archivo)
   - debug_parse_inputs.log  (log detallado)
 
-Ahora:
-✅ Lee config_layout.json (Task 00) por proceso
-✅ Pasa layout dinámico a parse_eoi_excel(layout=...)
-   para que experiencia general no sea fija.
-
 Uso:
   python tasks/task_20_parse_inputs.py
   python tasks/task_20_parse_inputs.py --root "D:\...\ProcesoSelección"
@@ -29,18 +24,17 @@ import csv
 import json
 import re
 from pathlib import Path
+#from datetime import datetime
 from datetime import datetime, date
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from parsers.eoi_excel import parse_eoi_excel
 from parsers.eoi_pdf import parse_eoi_pdf
-
 
 IN_FOLDER_NAME = "009. EDI RECIBIDA"
 OUT_FOLDER_NAME = "011. INSTALACIÓN DE COMITÉ"
 
 FILES_SELECTED = "files_selected.csv"
-LAYOUT_FILE = "config_layout.json"
 
 OUT_JSONL = "consolidado.jsonl"
 OUT_CSV = "consolidado.csv"
@@ -87,7 +81,7 @@ def read_selected_csv(path: Path) -> List[Dict[str, str]]:
     with path.open("r", encoding="utf-8") as f:
         r = csv.DictReader(f)
         for row in r:
-            rows.append({k: (row.get(k) or "").strip() for k in (r.fieldnames or [])})
+            rows.append({k: (row.get(k) or "").strip() for k in r.fieldnames or []})
     return rows
 
 
@@ -114,35 +108,51 @@ def safe_int(x, default=0):
 
 
 def to_iso(x):
+    # date o datetime => isoformat
     if isinstance(x, datetime):
         return x.isoformat(timespec="seconds")
     if isinstance(x, date):
         return x.isoformat()
     return x
 
-
 def json_safe(obj):
+    """
+    Convierte recursivamente dict/list/tuplas y tipos no serializables.
+    """
+    # fechas
     if isinstance(obj, (datetime, date)):
         return to_iso(obj)
+
+    # Path
     if isinstance(obj, Path):
         return str(obj)
+
+    # dict
     if isinstance(obj, dict):
         return {str(k): json_safe(v) for k, v in obj.items()}
+
+    # list/tuple/set
     if isinstance(obj, (list, tuple, set)):
         return [json_safe(v) for v in obj]
+
+    # primitivos OK
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
+
+    # fallback
     return str(obj)
 
 
 def normalize_phone(s: str) -> str:
     s = norm(s)
     digits = re.sub(r"\D+", "", s)
+    # En Perú suelen ser 9 dígitos móvil; igual devolvemos todo lo numérico si hay.
     return digits
 
 
 def normalize_dni(s: str) -> str:
     s = norm(s)
+    # DNI peruano típico 8 dígitos
     m = re.search(r"\b(\d{8})\b", s)
     return m.group(1) if m else s
 
@@ -154,6 +164,9 @@ def normalize_email(s: str) -> str:
 
 
 def flatten_summary_row(proceso: str, meta: Dict[str, str], data: Dict[str, Any]) -> List[Any]:
+    """
+    Fila resumen para consolidado.csv
+    """
     return [
         proceso,
         meta.get("carpeta_postulante", ""),
@@ -186,6 +199,9 @@ def attach_meta(proceso: str, meta: Dict[str, str], data: Dict[str, Any], ftype:
 
 
 def post_normalize(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normaliza campos clave SIN inventar información.
+    """
     data = dict(data)
 
     dni = normalize_dni(str(data.get("dni", "") or ""))
@@ -195,14 +211,18 @@ def post_normalize(data: Dict[str, Any]) -> Dict[str, Any]:
     data["dni"] = dni
     data["email"] = email
     data["celular"] = cel
+
+    # nombre_full: solo normaliza espacios
     data["nombre_full"] = norm(str(data.get("nombre_full", "") or ""))
 
+    # cursos: limpia vacíos
     cursos = data.get("cursos", []) or []
     if isinstance(cursos, list):
         data["cursos"] = [norm(str(x)) for x in cursos if norm(str(x))]
     else:
         data["cursos"] = []
 
+    # experiencias: asegurar lista de dict
     exps = data.get("experiencias", []) or []
     if not isinstance(exps, list):
         exps = []
@@ -220,83 +240,24 @@ def post_normalize(data: Dict[str, Any]) -> Dict[str, Any]:
         })
     data["experiencias"] = clean_exps
 
+    # flags tecnológicos (si los parsers ya lo ponen, lo respetamos)
     data["java_ok"] = bool(data.get("java_ok", False))
     data["oracle_ok"] = bool(data.get("oracle_ok", False))
 
+    # warnings
     warnings = []
+
     if dni and not re.fullmatch(r"\d{8}", dni):
         warnings.append(f"DNI_NO_8_DIGITOS:{dni}")
+
     if email and "@" not in email:
         warnings.append(f"EMAIL_RARO:{email}")
+
     if cel and len(cel) < 7:
         warnings.append(f"CEL_RARO:{cel}")
 
     data["_parse_warnings"] = " | ".join(warnings)
     return data
-
-
-# -------------------------
-# Layout dinámico desde Task_00
-# -------------------------
-def load_layout_json(layout_path: Path) -> Dict[str, Any]:
-    if not layout_path.exists():
-        return {}
-    try:
-        return json.loads(layout_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _int_or_none(x) -> Optional[int]:
-    try:
-        if x is None:
-            return None
-        return int(x)
-    except Exception:
-        return None
-
-
-def build_parser_layout_from_config_layout(layout_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Convierte config_layout.json (Task_00) en layout para parse_eoi_excel(layout=...).
-
-    Regla:
-    - DP fijo 12..23 (porque ese formato es estable)
-    - EG dinámico:
-        start = label_rows_detectados.exp_general + 1 (típicamente debajo del título)
-        end = antes de exp_especifica/entrevista/puntaje_total (el primero que aparezca)
-      Si algo falta, fallback a 101..145
-    """
-    label = (layout_cfg or {}).get("label_rows_detectados") or {}
-
-    exp_general_label = _int_or_none(label.get("exp_general"))
-    exp_especifica_label = _int_or_none(label.get("exp_especifica"))
-    entrevista_label = _int_or_none(label.get("entrevista"))
-    puntaje_total_label = _int_or_none(label.get("puntaje_total"))
-
-    # DP estable
-    dp_layout = {"start_row": 12, "end_row": 23, "max_cols": 12}
-
-    # EG dinámico
-    if exp_general_label:
-        eg_start = exp_general_label + 1
-
-        # el fin es la primera sección posterior
-        candidates = [x for x in [exp_especifica_label, puntaje_total_label, entrevista_label] if x]
-        eg_end = (min(candidates) - 1) if candidates else (eg_start + 60)
-
-        # sanidad
-        if eg_end < eg_start:
-            eg_end = eg_start + 40
-
-        eg_layout = {"start_row": eg_start, "end_row": eg_end}
-    else:
-        eg_layout = {"start_row": 101, "end_row": 145}
-
-    return {
-        "datos_personales": dp_layout,
-        "experiencia_general": eg_layout,
-    }
 
 
 # -------------------------
@@ -339,7 +300,6 @@ def main():
         in_dir = proc_dir / IN_FOLDER_NAME
         out_dir = proc_dir / OUT_FOLDER_NAME
         selected_path = out_dir / FILES_SELECTED
-        layout_path = out_dir / LAYOUT_FILE
 
         if not selected_path.exists():
             skip_proc += 1
@@ -361,16 +321,10 @@ def main():
         if debug_log.exists():
             debug_log.unlink(missing_ok=True)
 
-        # cargar layout por proceso (Task_00)
-        layout_cfg = load_layout_json(layout_path)
-        parser_layout = build_parser_layout_from_config_layout(layout_cfg)
-
         log_append(debug_log, f"== PROCESO: {proceso} ==")
         log_append(debug_log, f"selected_count: {len(selected)}")
         log_append(debug_log, f"use_ocr: {use_ocr}")
         log_append(debug_log, f"selected_file: {selected_path}")
-        log_append(debug_log, f"layout_file_exists: {layout_path.exists()}")
-        log_append(debug_log, f"parser_layout: {json.dumps(parser_layout, ensure_ascii=False)}")
 
         jsonl_items: List[Dict[str, Any]] = []
         parse_log_rows: List[List[str]] = []
@@ -402,12 +356,19 @@ def main():
 
             try:
                 if fp.suffix.lower() in (".xlsx", ".xlsm", ".xls") or ftype == "EXCEL":
-                    # ✅ Excel con layout dinámico
-                    data = parse_eoi_excel(fp, layout=parser_layout)
+                    data = parse_eoi_excel(fp)
                     ftype2 = "EXCEL"
                 else:
                     data = parse_eoi_pdf(fp, use_ocr=use_ocr)
                     ftype2 = "PDF"
+                
+                #####LOG - FECHA - FGARCIAA
+                import pprint
+                log_append(debug_log, "[DEBUG] tipos sospechosos:")
+                for k,v in (data or {}).items():
+                    if isinstance(v, (date, datetime)):
+                        log_append(debug_log, f"  TOP_LEVEL_DATE: {k}={v}")
+                ###################
 
                 if not isinstance(data, dict):
                     raise ValueError("PARSER_NO_DEVOLVIO_DICT")

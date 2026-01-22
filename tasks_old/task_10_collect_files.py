@@ -1,4 +1,3 @@
-
 # tasks/task_10_collect_files.py
 # -*- coding: utf-8 -*-
 """
@@ -27,7 +26,7 @@ import json
 import re
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 IN_FOLDER_NAME = "009. EDI RECIBIDAS"
 OUT_FOLDER_NAME = "011. INSTALACIÓN DE COMITÉ"
@@ -37,6 +36,9 @@ OUT_SKIPPED = "files_skipped.csv"
 OUT_LOG = "debug_collect_files.log"
 
 
+# -------------------------
+# Helpers
+# -------------------------
 def ts():
     return datetime.now().isoformat(timespec="seconds")
 
@@ -97,7 +99,12 @@ def score_pdf(f: Path) -> int:
     return bonus
 
 
-def choose_one_file_per_postulante_folder(in_dir: Path):
+def choose_one_file_per_postulante_folder(in_dir: Path) -> Tuple[List[Path], List[Tuple[Path, str]]]:
+    """
+    Devuelve:
+      - chosen: lista de archivos elegidos (1 por postulante)
+      - skipped: lista de (carpeta, motivo) que no se procesará
+    """
     if not in_dir.exists():
         return [], []
 
@@ -171,6 +178,15 @@ def main():
             print(f"  - SKIP: {proceso} (no existe 009)")
             continue
 
+        # (opcional) exigir que exista config_layout.json, porque ya pasaste Task 00
+        layout_path = out_dir / "config_layout.json"
+        if not layout_path.exists():
+            # igual podemos continuar, pero lo marcamos
+            if not args.dry_run:
+                ensure_dir(out_dir)
+                log_append(out_dir / OUT_LOG, "[WARN] No existe config_layout.json (Task 00 no ejecutado aquí). Continuando igual.")
+            # no hacemos skip: podemos recolectar igual
+
         chosen, skipped = choose_one_file_per_postulante_folder(in_dir)
 
         if args.dry_run:
@@ -191,7 +207,13 @@ def main():
         selected_rows: List[List[str]] = []
         for i, fp in enumerate(chosen, start=1):
             ftype = "EXCEL" if fp.suffix.lower() in (".xlsx", ".xlsm", ".xls") else "PDF"
-            selected_rows.append([str(i), fp.parent.name, fp.name, ftype, str(fp)])
+            selected_rows.append([
+                str(i),
+                fp.parent.name,     # carpeta postulante
+                fp.name,
+                ftype,
+                str(fp)
+            ])
             log_append(log_path, f"[CHOSEN] {fp.parent.name} -> {fp.name} ({ftype})")
 
         skipped_rows: List[List[str]] = []

@@ -78,7 +78,7 @@
     "row17_height": 20
   },
   "pdf": {
-    "use_ocr": false
+    "use_ocr": true
   },
   "export_calculadora": true
 }

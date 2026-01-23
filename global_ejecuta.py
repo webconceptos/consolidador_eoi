@@ -3,17 +3,6 @@
 # -*- coding: utf-8 -*-
 """
 Ejecutor global de tasks.
-
-Permite correr:
-  task_00_config_layout
-  task_10_collect_files
-  task_20_parse_inputs
-  task_30_export_outputs
-
-Uso:
-  python global_ejecuta.py --root "D:\...\ProcesoSelección" --from 0 --to 30
-  python global_ejecuta.py --root "D:\...\ProcesoSelección" --only-proc "SCI N° 069"
-  python global_ejecuta.py --root "D:\...\ProcesoSelección" --limit 5
 """
 
 import argparse
@@ -34,7 +23,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", type=str, required=True)
     ap.add_argument("--from", dest="from_task", type=int, default=0)
-    ap.add_argument("--to", dest="to_task", type=int, default=30)
+    ap.add_argument("--to", dest="to_task", type=int, default=100)
     ap.add_argument("--only-proc", type=str, default="")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--dry-run", action="store_true")
@@ -48,7 +37,7 @@ def main():
     py = sys.executable
 
     if args.from_task <= 0 <= args.to_task:
-        cmd = [py, "tasks/task_00_config_layout.py", "--root", str(root)]
+        cmd = [py, "tasks/task_00_layout_unificado.py", "--root", str(root)]
         if args.only_proc:
             cmd += ["--only-proc", args.only_proc]
         run(cmd)
@@ -72,6 +61,12 @@ def main():
     if args.from_task <= 30 <= args.to_task:
         cmd = [py, "tasks/task_30_export_outputs.py", "--root", str(root)]
         run(cmd)
+
+
+    if args.from_task <= 40 <= args.to_task:
+        cmd = [py, "tasks/task_40_fill_cuadro_evaluacion.py", "--root", str(root)]
+        run(cmd)
+
 
     print("\n[global_ejecuta] DONE")
 

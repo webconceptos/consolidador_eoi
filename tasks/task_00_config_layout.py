@@ -3,22 +3,6 @@
 # -*- coding: utf-8 -*-
 """
 Task 00: config_layout
-
-Objetivo:
-- Crear un archivo de configuración por proceso (config_layout.json) que permita
-  ubicar dinámicamente las secciones dentro del Excel EDI, evitando filas fijas.
-
-Salida:
-  <Proceso>/011. INSTALACIÓN DE COMITÉ/config_layout.json
-
-Estrategia:
-- Buscar etiquetas (texto) dentro de la hoja, por ejemplo:
-  "EXPERIENCIA GENERAL", "EXPERIENCIA ESPECÍFICA", etc.
-- Guardar la fila de inicio detectada y un rango aproximado.
-
-Uso:
-  python tasks/task_00_config_layout.py --root "D:\...\ProcesoSelección"
-  python tasks/task_00_config_layout.py --only-proc "SCI N° 069-2025"
 """
 
 import argparse
@@ -38,7 +22,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from openpyxl import load_workbook
 
-IN_FOLDER_NAME = "009. EDI RECIBIDA"
+IN_FOLDER_NAME = "009. EDI RECIBIDAS"
 OUT_FOLDER_NAME = "011. INSTALACIÓN DE COMITÉ"
 
 OUT_LAYOUT = "config_layout.json"

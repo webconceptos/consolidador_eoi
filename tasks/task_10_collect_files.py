@@ -3,22 +3,6 @@
 # -*- coding: utf-8 -*-
 """
 Task 10: collect_files
-
-Recolecta y elige 1 archivo por carpeta de postulante dentro de:
-  <Proceso>/009. EDI RECIBIDA/<EDI postulante...>/(xlsx|xlsm|xls|pdf)
-
-Regla:
-- Si hay Excel => usar Excel (mejor score)
-- Si NO hay Excel => usar PDF (mejor score), pero descartar PDFs tipo correo/presentación
-- Genera reportes en:
-  <Proceso>/011. INSTALACIÓN DE COMITÉ/
-    - files_selected.csv
-    - files_skipped.csv
-    - debug_collect_files.log
-
-Uso:
-  python tasks/task_10_collect_files.py --root "D:\...\ProcesoSelección"
-  python tasks/task_10_collect_files.py --dry-run
 """
 
 import argparse
@@ -163,8 +147,8 @@ def main():
     procesos = [p for p in root.iterdir() if p.is_dir()]
     procesos.sort(key=lambda x: x.name.lower())
 
-    print(f"[collect_files] root = {root}")
-    print(f"[collect_files] procesos detectados = {len(procesos)}")
+    print(f"[task_10_collect_files] root = {root}")
+    print(f"[task_10_collect_files] procesos detectados = {len(procesos)}")
 
     ok_proc = 0
     skip_proc = 0
@@ -214,7 +198,7 @@ def main():
         print(f"  - OK: {proceso} -> {OUT_SELECTED} ({len(chosen)} elegidos) / {OUT_SKIPPED} ({len(skipped)} omitidos)")
 
     print("")
-    print(f"[collect_files] resumen: OK_PROCESOS={ok_proc} SKIP_PROCESOS={skip_proc}")
+    print(f"[task_10_collect_files] resumen: OK_PROCESOS={ok_proc} SKIP_PROCESOS={skip_proc}")
 
 
 if __name__ == "__main__":

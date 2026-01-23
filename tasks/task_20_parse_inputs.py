@@ -2,26 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 Task 20: parse_inputs
-
-Lee el listado de archivos elegidos por proceso (Task 10: files_selected.csv),
-parsea cada PDF/Excel y genera salidas normalizadas por proceso:
-
-En <Proceso>/011. INSTALACIÓN DE COMITÉ/
-  - consolidado.jsonl       (1 JSON por postulante)
-  - consolidado.csv         (resumen plano)
-  - parse_log.csv           (OK/ERROR por archivo)
-  - debug_parse_inputs.log  (log detallado)
-
-Ahora:
-✅ Lee config_layout.json (Task 00) por proceso
-✅ Pasa layout dinámico a parse_eoi_excel(layout=...)
-   para que experiencia general no sea fija.
-
-Uso:
-  python tasks/task_20_parse_inputs.py
-  python tasks/task_20_parse_inputs.py --root "D:\...\ProcesoSelección"
-  python tasks/task_20_parse_inputs.py --limit 10
-  python tasks/task_20_parse_inputs.py --only-proc "SCI N° 069-2025 ANALISTA ..."
 """
 
 import argparse
@@ -45,7 +25,7 @@ from parsers.eoi_excel import parse_eoi_excel
 from parsers.eoi_pdf import parse_eoi_pdf
 
 
-IN_FOLDER_NAME = "009. EDI RECIBIDA"
+IN_FOLDER_NAME = "009. EDI RECIBIDAS"
 OUT_FOLDER_NAME = "011. INSTALACIÓN DE COMITÉ"
 
 FILES_SELECTED = "files_selected.csv"

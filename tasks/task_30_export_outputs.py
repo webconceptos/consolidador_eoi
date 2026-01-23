@@ -3,15 +3,6 @@
 # -*- coding: utf-8 -*-
 """
 Task 30: export_outputs
-
-Lee consolidado.jsonl por proceso (Task 20) y genera exports:
-- Excel consolidado (simple)
-- CSVs adicionales
-
-Esta Task NO depende de carpeta writers; usa exporters/*
-
-Uso:
-  python tasks/task_30_export_outputs.py --root "D:\...\ProcesoSelección"
 """
 
 import argparse

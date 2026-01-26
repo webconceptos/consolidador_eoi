@@ -1,7 +1,15 @@
 # tasks/task_20_parse_inputs.py
 # -*- coding: utf-8 -*-
 """
-Task 20: parse_inputs
+Task 20 definitivo — Parse Inputs (ETL)
+
+- Lee 011/files_selected.csv
+- Parsea cada EDI con parsers definitivos (Excel/PDF)
+- Exporta:
+    011/parsed_postulantes.jsonl
+    011/parsed_postulantes.csv
+    011/parse_log.csv
+    011/debug_parse_inputs.log
 """
 
 import argparse
@@ -9,38 +17,33 @@ import csv
 import json
 import re
 from pathlib import Path
-from datetime import datetime, date
-from typing import Dict, Any, List, Optional
+from datetime import datetime
 
-
-import sys
-from pathlib import Path
-
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-
+import datetime as dt
+from datetime import datetime, date, timedelta
+from typing import Dict, Any, List, Tuple, Optional
 
 from parsers.eoi_excel import parse_eoi_excel
-from parsers.eoi_pdf import parse_eoi_pdf
+from parsers.eoi_pdf import parse_eoi_pdf  # asumiendo que ya lo tienes
 
 
-IN_FOLDER_NAME = "009. EDI RECIBIDAS"
 OUT_FOLDER_NAME = "011. INSTALACIÓN DE COMITÉ"
-
 FILES_SELECTED = "files_selected.csv"
-LAYOUT_FILE = "config_layout.json"
 
-OUT_JSONL = "consolidado.jsonl"
-OUT_CSV = "consolidado.csv"
+OUT_JSONL = "parsed_postulantes.jsonl"
+OUT_CSV = "parsed_postulantes.csv"
 OUT_PARSE_LOG = "parse_log.csv"
 OUT_DEBUG_LOG = "debug_parse_inputs.log"
 
+_DATE_FMT = "%d/%m/%Y"
+_CAL_ANCHOR = date(2000, 1, 1)  # ancla fija para convertir días -> (y,m,d) real
 
-# -------------------------
-# Helpers
-# -------------------------
-def ts():
+try:
+    from dateutil.relativedelta import relativedelta
+except Exception:
+    relativedelta = None  # si no está dateutil instalado
+
+def ts() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
@@ -48,92 +51,23 @@ def norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip())
 
 
-def ensure_dir(p: Path):
+def ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
 
-def log_append(path: Path, msg: str):
+def log_append(path: Path, msg: str) -> None:
     ensure_dir(path.parent)
     with path.open("a", encoding="utf-8") as f:
         f.write(f"[{ts()}] {msg}\n")
 
 
-def load_global_config() -> dict:
-    p = Path("configs/config.json")
-    if not p.exists():
-        return {}
-    return json.loads(p.read_text(encoding="utf-8"))
-
-
-def read_selected_csv(path: Path) -> List[Dict[str, str]]:
-    """
-    Espera columnas:
-      n, carpeta_postulante, archivo, tipo, ruta
-    """
-    rows: List[Dict[str, str]] = []
-    if not path.exists():
-        return rows
-    with path.open("r", encoding="utf-8") as f:
-        r = csv.DictReader(f)
-        for row in r:
-            rows.append({k: (row.get(k) or "").strip() for k in (r.fieldnames or [])})
-    return rows
-
-
-def write_jsonl(path: Path, items: List[Dict[str, Any]]):
-    ensure_dir(path.parent)
-    with path.open("w", encoding="utf-8") as f:
-        for obj in items:
-            f.write(json.dumps(json_safe(obj), ensure_ascii=False) + "\n")
-
-
-def write_csv(path: Path, header: List[str], rows: List[List[Any]]):
-    ensure_dir(path.parent)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(header)
-        w.writerows(rows)
-
-
-def safe_int(x, default=0):
-    try:
-        return int(x)
-    except Exception:
-        return default
-
-
-def to_iso(x):
-    if isinstance(x, datetime):
-        return x.isoformat(timespec="seconds")
-    if isinstance(x, date):
-        return x.isoformat()
-    return x
-
-
-def json_safe(obj):
-    if isinstance(obj, (datetime, date)):
-        return to_iso(obj)
-    if isinstance(obj, Path):
-        return str(obj)
-    if isinstance(obj, dict):
-        return {str(k): json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set)):
-        return [json_safe(v) for v in obj]
-    if obj is None or isinstance(obj, (str, int, float, bool)):
-        return obj
-    return str(obj)
-
-
 def normalize_phone(s: str) -> str:
-    s = norm(s)
-    digits = re.sub(r"\D+", "", s)
-    return digits
+    return re.sub(r"\D+", "", norm(s))
 
 
 def normalize_dni(s: str) -> str:
-    s = norm(s)
-    m = re.search(r"\b(\d{8})\b", s)
-    return m.group(1) if m else s
+    m = re.search(r"\b(\d{8})\b", norm(s))
+    return m.group(1) if m else norm(s)
 
 
 def normalize_email(s: str) -> str:
@@ -142,301 +76,305 @@ def normalize_email(s: str) -> str:
     return m.group(1) if m else s
 
 
-def flatten_summary_row(proceso: str, meta: Dict[str, str], data: Dict[str, Any]) -> List[Any]:
-    return [
-        proceso,
-        meta.get("carpeta_postulante", ""),
-        meta.get("archivo", ""),
-        meta.get("tipo", ""),
-        meta.get("ruta", ""),
-        data.get("dni", ""),
-        data.get("nombre_full", ""),
-        data.get("email", ""),
-        data.get("celular", ""),
-        safe_int(data.get("exp_general_dias", 0)),
-        safe_int(data.get("exp_especifica_dias", 0)),
-        len(data.get("experiencias", []) or []),
-        len(data.get("cursos", []) or []),
-        data.get("_parse_warnings", ""),
-    ]
+def read_selected_csv(path: Path) -> List[Dict[str, str]]:
+    rows = []
+    with path.open("r", encoding="utf-8") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            rows.append({k: (row.get(k) or "").strip() for k in (r.fieldnames or [])})
+    return rows
 
+def _json_sanitize(o):
+    # Pathlib (WindowsPath, PosixPath)
+    if isinstance(o, Path):
+        return str(o)
+    # datetime/date
+    if isinstance(o, (dt.datetime, dt.date)):
+        return o.isoformat()
+    # set/tuple
+    if isinstance(o, (set, tuple)):
+        return list(o)
+    # fallback: que explote con TypeError si sigue raro
+    raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
 
-def attach_meta(proceso: str, meta: Dict[str, str], data: Dict[str, Any], ftype: str) -> Dict[str, Any]:
-    out = dict(data) if isinstance(data, dict) else {}
-    out["_meta"] = {
-        "proceso": proceso,
-        "carpeta_postulante": meta.get("carpeta_postulante", ""),
-        "archivo": meta.get("archivo", ""),
-        "tipo": ftype,
-        "ruta": meta.get("ruta", ""),
-        "parsed_at": ts(),
-    }
-    return out
+def deep_sanitize(x):
+    if isinstance(x, Path):
+        return str(x)
+    if isinstance(x, (dt.datetime, dt.date)):
+        return x.isoformat()
+    if isinstance(x, dict):
+        return {k: deep_sanitize(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [deep_sanitize(v) for v in x]
+    if isinstance(x, tuple):
+        return [deep_sanitize(v) for v in x]
+    if isinstance(x, set):
+        return [deep_sanitize(v) for v in x]
+    return x
 
+def write_jsonl(path, items):
+    with open(path, "w", encoding="utf-8") as f:
+        for obj in items:
+            f.write(json.dumps(obj, ensure_ascii=False, default=_json_sanitize) + "\n")
 
-def post_normalize(data: Dict[str, Any]) -> Dict[str, Any]:
-    data = dict(data)
+def write_csv(path: Path, header: List[str], rows: List[List[Any]]) -> None:
+    ensure_dir(path.parent)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(rows)
 
-    dni = normalize_dni(str(data.get("dni", "") or ""))
-    email = normalize_email(str(data.get("email", "") or ""))
-    cel = normalize_phone(str(data.get("celular", "") or ""))
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip())
 
-    data["dni"] = dni
-    data["email"] = email
-    data["celular"] = cel
-    data["nombre_full"] = norm(str(data.get("nombre_full", "") or ""))
-
-    cursos = data.get("cursos", []) or []
-    if isinstance(cursos, list):
-        data["cursos"] = [norm(str(x)) for x in cursos if norm(str(x))]
-    else:
-        data["cursos"] = []
-
-    exps = data.get("experiencias", []) or []
-    if not isinstance(exps, list):
-        exps = []
-    clean_exps = []
-    for e in exps:
-        if not isinstance(e, dict):
-            continue
-        clean_exps.append({
-            "fi": e.get("fi"),
-            "ff": e.get("ff"),
-            "entidad": norm(str(e.get("entidad", "") or "")),
-            "cargo": norm(str(e.get("cargo", "") or "")),
-            "proyecto": norm(str(e.get("proyecto", "") or "")),
-            "funciones": norm(str(e.get("funciones", "") or "")),
-        })
-    data["experiencias"] = clean_exps
-
-    data["java_ok"] = bool(data.get("java_ok", False))
-    data["oracle_ok"] = bool(data.get("oracle_ok", False))
-
-    warnings = []
-    if dni and not re.fullmatch(r"\d{8}", dni):
-        warnings.append(f"DNI_NO_8_DIGITOS:{dni}")
-    if email and "@" not in email:
-        warnings.append(f"EMAIL_RARO:{email}")
-    if cel and len(cel) < 7:
-        warnings.append(f"CEL_RARO:{cel}")
-
-    data["_parse_warnings"] = " | ".join(warnings)
-    return data
-
-
-# -------------------------
-# Layout dinámico desde Task_00
-# -------------------------
-def load_layout_json(layout_path: Path) -> Dict[str, Any]:
-    if not layout_path.exists():
-        return {}
+def _parse_date(s: str) -> Optional[date]:
+    s = (s or "").strip()
+    if not s:
+        return None
     try:
-        return json.loads(layout_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _int_or_none(x) -> Optional[int]:
-    try:
-        if x is None:
-            return None
-        return int(x)
+        return datetime.strptime(s, _DATE_FMT).date()
     except Exception:
         return None
 
-
-def build_parser_layout_from_config_layout(layout_cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _merge_intervals(intervals: List[Tuple[date, date]]) -> List[Tuple[date, date]]:
     """
-    Convierte config_layout.json (Task_00) en layout para parse_eoi_excel(layout=...).
-
-    Regla:
-    - DP fijo 12..23 (porque ese formato es estable)
-    - EG dinámico:
-        start = label_rows_detectados.exp_general + 1 (típicamente debajo del título)
-        end = antes de exp_especifica/entrevista/puntaje_total (el primero que aparezca)
-      Si algo falta, fallback a 101..145
+    intervals: lista de (start, end) con end INCLUSIVO.
+    Mergea superposiciones y adyacentes.
     """
-    label = (layout_cfg or {}).get("label_rows_detectados") or {}
+    if not intervals:
+        return []
+    intervals = sorted(intervals, key=lambda x: (x[0], x[1]))
+    merged = [intervals[0]]
+    for s, e in intervals[1:]:
+        ps, pe = merged[-1]
+        # si se superpone o es adyacente (pe + 1 día >= s), unir
+        if s <= pe + timedelta(days=1):
+            merged[-1] = (ps, max(pe, e))
+        else:
+            merged.append((s, e))
+    return merged
 
-    exp_general_label = _int_or_none(label.get("exp_general"))
-    exp_especifica_label = _int_or_none(label.get("exp_especifica"))
-    entrevista_label = _int_or_none(label.get("entrevista"))
-    puntaje_total_label = _int_or_none(label.get("puntaje_total"))
+##a task20
+def _days_inclusive(s: date, e: date) -> int:
+    return (e - s).days + 1
 
-    # DP estable
-    dp_layout = {"start_row": 12, "end_row": 23, "max_cols": 12}
+##a task20
+def _days_to_ymd_calendar_real(total_days: int, anchor: date = _CAL_ANCHOR) -> Tuple[int, int, int]:
+    """
+    Convierte días -> (años, meses, días) en calendario real usando un anchor fijo.
+    Requiere python-dateutil.
+    """
+    if relativedelta is None:
+        raise RuntimeError("Falta python-dateutil. Instala con: pip install python-dateutil")
 
-    # EG dinámico
-    if exp_general_label:
-        eg_start = exp_general_label + 1
-
-        # el fin es la primera sección posterior
-        candidates = [x for x in [exp_especifica_label, puntaje_total_label, entrevista_label] if x]
-        eg_end = (min(candidates) - 1) if candidates else (eg_start + 60)
-
-        # sanidad
-        if eg_end < eg_start:
-            eg_end = eg_start + 40
-
-        eg_layout = {"start_row": eg_start, "end_row": eg_end}
-    else:
-        eg_layout = {"start_row": 101, "end_row": 145}
-
-    return {
-        "datos_personales": dp_layout,
-        "experiencia_general": eg_layout,
-    }
+    end = anchor + timedelta(days=total_days)
+    rd = relativedelta(end, anchor)
+    return rd.years, rd.months, rd.days
 
 
-# -------------------------
-# Main
-# -------------------------
+def compute_experience_summary_and_total_calendar_real(
+    exp_block: Dict[str, Any],
+    anchor: date = _CAL_ANCHOR
+) -> Tuple[str, Tuple[int, int, int], int, List[Tuple[date, date]],str]:
+    """
+    Retorna:
+      - resumen_text
+      - (años, meses, días) calendario real (con anchor fijo)
+      - total_days_unicos (sin superposición)
+      - merged_intervals (para depuración)
+    """
+    items = exp_block.get("items") or []
+    if not isinstance(items, list):
+        items = []
+
+    resumen_parts: List[str] = []
+    detalle_parts: List[str] = []
+    raw_intervals: List[Tuple[date, date]] = []
+
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+
+        entidad = _norm(it.get("entidad", ""))
+        cargo = _norm(it.get("cargo", ""))
+        f1s = _norm(it.get("fecha_inicio", ""))
+        f2s = _norm(it.get("fecha_fin", ""))
+
+        d1 = _parse_date(f1s)
+        d2 = _parse_date(f2s)
+
+        # Resumen
+        header = f"{entidad} - {cargo}".strip(" -")
+        if f1s or f2s:
+            header += f" | {f1s or '?'} a {f2s or '?'}"
+
+        desc = (it.get("descripcion") or "").strip()
+        if desc:
+            resumen_parts.append(f"{header}\n  Desc: {desc}")
+        else:
+            resumen_parts.append(header)
+
+        detalle_parts.append(f"- {header}")
+
+        # Intervalos (solo si hay fechas válidas)
+        if d1 and d2:
+            if d2 < d1:
+                d1, d2 = d2, d1
+            raw_intervals.append((d1, d2))
+
+    resumen_text = "\n\n".join([p for p in resumen_parts if p.strip()]).strip()
+    detalle_text = "\n".join([p for p in detalle_parts if p.strip()]).strip()    
+
+    merged = _merge_intervals(raw_intervals)
+    total_days = sum(_days_inclusive(s, e) for s, e in merged)
+    y, m, d = _days_to_ymd_calendar_real(total_days, anchor=anchor)
+
+    return resumen_text, (y, m, d), total_days, merged, detalle_text
+
+def format_ymd(y: int, m: int, d: int) -> str:
+    return f"{y} año(s), {m} mes(es), {d} día(s)"
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", type=str, default="", help="Carpeta raíz: contiene los procesos")
-    ap.add_argument("--limit", type=int, default=0, help="Limitar N archivos por proceso (0 = sin límite)")
-    ap.add_argument("--only-proc", type=str, default="", help="Procesar solo procesos cuyo nombre contenga este texto")
-    ap.add_argument("--use-ocr", action="store_true", help="Forzar OCR en PDF (si tu parser lo soporta)")
+    ap.add_argument("--root", required=True, help="Carpeta raíz con procesos")
+    ap.add_argument("--only-proc", default="", help="Procesar solo procesos cuyo nombre contenga este texto")
+    ap.add_argument("--use-ocr", action="store_true", help="Usar OCR para PDF (si tu parser lo soporta)")
     args = ap.parse_args()
 
-    cfg = load_global_config()
-    root = Path(args.root) if args.root.strip() else Path(cfg.get("input_root", ""))
-
-    if not str(root).strip():
-        raise SystemExit("Debes pasar --root o definir input_root en configs/config.json")
-    if not root.exists():
-        raise SystemExit(f"No existe root: {root}")
-
-    use_ocr = bool(cfg.get("pdf", {}).get("use_ocr", False)) or bool(args.use_ocr)
+    root = Path(args.root)
+    only_filter = norm(args.only_proc).lower()
+    use_ocr = bool(args.use_ocr)
 
     procesos = [p for p in root.iterdir() if p.is_dir()]
     procesos.sort(key=lambda x: x.name.lower())
 
-    only_filter = norm(args.only_proc).lower()
+    print(f"[task_20_parse_inputs] root={root} procesos={len(procesos)} use_ocr={use_ocr}")
 
-    print(f"[parse_inputs] root = {root}")
-    print(f"[parse_inputs] procesos detectados = {len(procesos)} | use_ocr={use_ocr}")
-
-    ok_proc = 0
-    skip_proc = 0
+    ok, skip, fail = 0, 0, 0
 
     for proc_dir in procesos:
         proceso = proc_dir.name
         if only_filter and only_filter not in proceso.lower():
             continue
 
-        in_dir = proc_dir / IN_FOLDER_NAME
         out_dir = proc_dir / OUT_FOLDER_NAME
         selected_path = out_dir / FILES_SELECTED
-        layout_path = out_dir / LAYOUT_FILE
 
         if not selected_path.exists():
-            skip_proc += 1
-            print(f"  - SKIP: {proceso} (no existe {FILES_SELECTED} en 011; ejecuta Task 10)")
+            print(f"  - SKIP: {proceso} (falta 011/{FILES_SELECTED})")
+            skip += 1
             continue
 
         selected = read_selected_csv(selected_path)
         if not selected:
-            skip_proc += 1
-            print(f"  - SKIP: {proceso} ({FILES_SELECTED} vacío)")
+            print(f"  - SKIP: {proceso} (files_selected vacío)")
+            skip += 1
             continue
 
-        if args.limit and args.limit > 0:
-            selected = selected[: args.limit]
-
         ensure_dir(out_dir)
+        dbg = out_dir / OUT_DEBUG_LOG
+        if dbg.exists():
+            dbg.unlink(missing_ok=True)
 
-        debug_log = out_dir / OUT_DEBUG_LOG
-        if debug_log.exists():
-            debug_log.unlink(missing_ok=True)
+        items_jsonl: List[Dict[str, Any]] = []
+        parse_log_rows: List[List[Any]] = []
 
-        # cargar layout por proceso (Task_00)
-        layout_cfg = load_layout_json(layout_path)
-        parser_layout = build_parser_layout_from_config_layout(layout_cfg)
-
-        log_append(debug_log, f"== PROCESO: {proceso} ==")
-        log_append(debug_log, f"selected_count: {len(selected)}")
-        log_append(debug_log, f"use_ocr: {use_ocr}")
-        log_append(debug_log, f"selected_file: {selected_path}")
-        log_append(debug_log, f"layout_file_exists: {layout_path.exists()}")
-        log_append(debug_log, f"parser_layout: {json.dumps(parser_layout, ensure_ascii=False)}")
-
-        jsonl_items: List[Dict[str, Any]] = []
-        parse_log_rows: List[List[str]] = []
-        consolidado_rows: List[List[Any]] = []
-
-        consolidado_header = [
-            "proceso", "carpeta_postulante", "archivo", "tipo", "ruta",
-            "dni", "nombre_full", "email", "celular",
-            "exp_general_dias", "exp_especifica_dias",
-            "n_experiencias", "n_cursos",
-            "warnings"
-        ]
-
-        for idx, meta in enumerate(selected, start=1):
+        for i, meta in enumerate(selected, start=1):
             ruta = meta.get("ruta", "")
-            if not ruta:
-                parse_log_rows.append([ts(), proceso, "", meta.get("archivo", ""), meta.get("tipo", ""), "ERROR", "RUTA_VACIA"])
-                continue
-
-            fp = Path(ruta)
-            ftype = (meta.get("tipo") or "").upper().strip()
-
-            log_append(debug_log, f"[{idx}/{len(selected)}] START {fp}")
-
-            if not fp.exists():
-                log_append(debug_log, f"[{idx}] ERROR FILE_NOT_FOUND: {fp}")
-                parse_log_rows.append([ts(), proceso, str(fp), meta.get("archivo", ""), ftype, "ERROR", "FILE_NOT_FOUND"])
+            fp = Path(ruta) if ruta else None
+            if not fp or not fp.exists():
+                parse_log_rows.append([ts(), proceso, ruta, meta.get("archivo",""), meta.get("tipo",""), "ERROR", "FILE_NOT_FOUND"])
                 continue
 
             try:
-                if fp.suffix.lower() in (".xlsx", ".xlsm", ".xls") or ftype == "EXCEL":
-                    # ✅ Excel con layout dinámico
-                    data = parse_eoi_excel(fp, layout=parser_layout)
-                    ftype2 = "EXCEL"
+                if fp.suffix.lower() in (".xlsx", ".xlsm", ".xls") or (meta.get("tipo","").upper() == "EXCEL"):
+                    data = parse_eoi_excel(fp)
+                    tipo = "EXCEL"
                 else:
                     data = parse_eoi_pdf(fp, use_ocr=use_ocr)
-                    ftype2 = "PDF"
+                    tipo = "PDF"
 
-                if not isinstance(data, dict):
-                    raise ValueError("PARSER_NO_DEVOLVIO_DICT")
+                # normalizaciones finales (consistentes)
+                data["dni"] = normalize_dni(str(data.get("dni","")))
+                data["email"] = normalize_email(str(data.get("email","")))
+                data["celular"] = normalize_phone(str(data.get("celular","")))
+                data["nombre_full"] = norm(str(data.get("nombre_full","")))
 
-                data = post_normalize(data)
-                data = attach_meta(proceso, meta, data, ftype2)
 
-                jsonl_items.append(data)
-                consolidado_rows.append(flatten_summary_row(proceso, meta, data))
+                resumen_exp_general, (y, m, d), total_days, merged, detalle_exp_general = compute_experience_summary_and_total_calendar_real(data.get("exp_general") or {})
+                resumen_exp_especifica, (y, m, d), total_days, merged , detalle_exp_especifica= compute_experience_summary_and_total_calendar_real(data.get("exp_especifica") or {})
+                # payload listo para Task 40 (solo valores)
+                data["_fill_payload"] = {
+                    "dni": data.get("dni",""),
+                    "nombre_full": data.get("nombre_full",""),
+                    "email": data.get("email",""),
+                    "celular": data.get("celular",""),
+                    "formacion_obligatoria_resumen": (data.get("formacion_obligatoria") or {}).get("resumen",""),
+                    "estudios_complementarios_resumen": (data.get("estudios_complementarios") or {}).get("resumen",""),
+                    "exp_general_detalle_text": resumen_exp_general,
+                    "exp_general_resumen_text": detalle_exp_general,
+                    "exp_general_total_text": format_ymd(y, m, d),
+                    "exp_general_dias": int(data.get("exp_general_dias",0) or 0),
+                    "exp_especifica_detalle_text": resumen_exp_especifica,
+                    "exp_especifica_resumen_text": detalle_exp_especifica,
+                    "exp_especifica_total_text": format_ymd(y, m, d),
+                    "exp_especifica_dias": int(data.get("exp_especifica_dias",0) or 0),
+                }
 
-                parse_log_rows.append([ts(), proceso, str(fp), meta.get("archivo", ""), ftype2, "OK", ""])
-                log_append(
-                    debug_log,
-                    f"[{idx}] OK dni='{data.get('dni','')}' nombre='{data.get('nombre_full','')}' "
-                    f"expG={data.get('exp_general_dias',0)} expE={data.get('exp_especifica_dias',0)} "
-                    f"warnings='{data.get('_parse_warnings','')}'"
-                )
+                # meta
+                data["_meta"] = {
+                    "proceso": proceso,
+                    "carpeta_postulante": meta.get("carpeta_postulante",""),
+                    "archivo": meta.get("archivo",""),
+                    "tipo": tipo,
+                    "ruta": ruta,
+                    "parsed_at": ts(),
+                }
+
+                items_jsonl.append(data)
+                parse_log_rows.append([ts(), proceso, ruta, meta.get("archivo",""), tipo, "OK", ""])
+                log_append(dbg, f"[{i}/{len(selected)}] OK {meta.get('archivo','')} dni={data.get('dni','')}")
 
             except Exception as e:
-                log_append(debug_log, f"[{idx}] EXCEPTION {repr(e)}")
-                parse_log_rows.append([ts(), proceso, str(fp), meta.get("archivo", ""), ftype, "ERROR", repr(e)])
+                parse_log_rows.append([ts(), proceso, ruta, meta.get("archivo",""), meta.get("tipo",""), "ERROR", repr(e)])
+                log_append(dbg, f"[{i}/{len(selected)}] ERROR {meta.get('archivo','')} {repr(e)}")
 
-        # escribir outputs por proceso
-        write_jsonl(out_dir / OUT_JSONL, jsonl_items)
-        write_csv(out_dir / OUT_CSV, consolidado_header, consolidado_rows)
-        write_csv(
-            out_dir / OUT_PARSE_LOG,
-            ["fecha", "proceso", "ruta", "archivo", "tipo", "estado", "detalle"],
-            parse_log_rows,
-        )
+        # Export
+        write_jsonl(out_dir / OUT_JSONL, items_jsonl)
 
-        log_append(debug_log, f"[DONE] jsonl={OUT_JSONL} rows={len(jsonl_items)}")
-        log_append(debug_log, f"[DONE] csv={OUT_CSV} rows={len(consolidado_rows)}")
-        log_append(debug_log, f"[DONE] parse_log={OUT_PARSE_LOG} rows={len(parse_log_rows)}")
+        header = [
+            "proceso","carpeta_postulante","archivo","tipo","ruta",
+            "dni","nombre_full","email","celular",
+            "formacion_obligatoria_resumen",
+            "exp_general_dias","exp_especifica_dias"
+        ]
+        rows = []
+        for d in items_jsonl:
+            m = d.get("_meta", {}) or {}
+            fp = d.get("_fill_payload", {}) or {}
+            rows.append([
+                proceso,
+                m.get("carpeta_postulante",""),
+                m.get("archivo",""),
+                m.get("tipo",""),
+                m.get("ruta",""),
+                d.get("dni",""),
+                d.get("nombre_full",""),
+                d.get("email",""),
+                d.get("celular",""),
+                fp.get("formacion_obligatoria_resumen",""),
+                fp.get("exp_general_dias",0),
+                fp.get("exp_especifica_dias",0),
+            ])
 
-        ok_proc += 1
-        print(f"  - OK: {proceso} -> {OUT_JSONL} ({len(jsonl_items)} postulantes) | errores={sum(1 for r in parse_log_rows if r[5]=='ERROR')}")
+        write_csv(out_dir / OUT_CSV, header, rows)
+        write_csv(out_dir / OUT_PARSE_LOG, ["fecha","proceso","ruta","archivo","tipo","estado","detalle"], parse_log_rows)
 
-    print("")
-    print(f"[parse_inputs] resumen: OK_PROCESOS={ok_proc} SKIP_PROCESOS={skip_proc}")
+        errs = sum(1 for r in parse_log_rows if r[5] == "ERROR")
+        print(f"  - OK: {proceso} -> {OUT_JSONL} ({len(items_jsonl)} postulantes) | errores={errs}")
+        ok += 1
+
+    print(f"\n[task_20_parse_inputs] resumen OK={ok} SKIP={skip} FAIL={fail}")
 
 
 if __name__ == "__main__":

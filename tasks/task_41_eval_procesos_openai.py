@@ -1,0 +1,375 @@
+# tasks/task_41_eval_procesos_openai.py
+# -*- coding: utf-8 -*-
+
+import argparse
+import json
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+
+from core.llm_client import evaluar_formacion, evaluar_estudios_complementarios
+
+OUT_FOLDER_NAME = "011. INSTALACIÓN DE COMITÉ"
+IN_CONSOLIDADO = "parsed_postulantes.jsonl"
+IN_CRITERIA = "criteria_evaluacion.json"
+OUT_EVAL = "evaluacion_postulantes.jsonl"
+OUT_RESUMEN = "evaluacion_resumen.json"
+
+
+def ts():
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def norm(s: str) -> str:
+    return " ".join((s or "").strip().split())
+
+
+def read_jsonl(path: Path) -> List[Dict[str, Any]]:
+    rows = []
+    if not path.exists():
+        return rows
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def write_jsonl(path: Path, rows: List[Dict[str, Any]]):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def write_json(path: Path, obj: Dict[str, Any]):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def get_formacion_text(p: Dict[str, Any]) -> str:
+    # 1) resumen directo
+    v = p.get("formacion_resumen")
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+
+    # 2) dict formacion_obligatoria
+    fo = p.get("formacion_obligatoria")
+    if isinstance(fo, dict):
+        r = fo.get("resumen")
+        if isinstance(r, str) and r.strip():
+            return r.strip()
+
+    # 3) items
+    items = p.get("formacion_items") or []
+    if isinstance(items, list) and items:
+        lines = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            grado = norm(str(it.get("grado", "") or ""))
+            carrera = norm(str(it.get("carrera", "") or ""))
+            entidad = norm(str(it.get("entidad", "") or ""))
+            line = " | ".join([x for x in [grado, carrera, entidad] if x])
+            if line:
+                lines.append(line)
+        if lines:
+            return "\n".join(lines)
+
+    return ""
+
+
+def get_ec_blocks(p: Dict[str, Any]) -> List[Dict[str, Any]]:
+    ec = p.get("estudios_complementarios") or {}
+    blocks = ec.get("blocks")
+    out = []
+    if isinstance(blocks, list):
+        for b in blocks:
+            if isinstance(b, dict):
+                out.append({
+                    "id": norm(str(b.get("id", ""))),
+                    "title": norm(str(b.get("title", ""))),
+                    "resumen": (b.get("resumen") or "").strip() if isinstance(b.get("resumen"), str) else ""
+                })
+    return out
+
+
+def get_ec_fallback_text(p: Dict[str, Any]) -> str:
+    for k in ("estudios_complementarios_resumen", "ec_resumen", "cursos_resumen"):
+        v = p.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def eval_one_postulante(p: Dict[str, Any], criteria: Dict[str, Any], debug: bool = False) -> Dict[str, Any]:
+    nombre = p.get("nombre_full", "(sin nombre)")
+    dni = p.get("dni", "")
+
+    # --- FA ---
+    criterio_fa = criteria["criterios"]["FA"]["criterio_item"]["text"]
+    criterio_fa_row = criteria["criterios"]["FA"]["criterio_item"].get("row")
+
+    formacion = get_formacion_text(p)
+
+    fa = evaluar_formacion(
+        criterio_text=criterio_fa,
+        formacion_postulante=formacion,
+        debug=debug,
+    )
+
+    # --- EC ---
+    criteria_ec_blocks = criteria["criterios"]["EC"]["blocks"]
+    ec_blocks_post = get_ec_blocks(p)
+    ec_fallback = get_ec_fallback_text(p)
+
+    ec_results = []
+    ec_puntaje_total = 0
+    ec_eliminatorio_no_cumple = False
+
+    for i, cb in enumerate(criteria_ec_blocks):
+        criterio_ec = cb["criterio_item"]["text"]
+        criterio_ec_row = cb["criterio_item"].get("row")
+        modo = cb.get("modo_evaluacion")
+        valor = cb.get("valor")
+
+        if i < len(ec_blocks_post) and ec_blocks_post[i].get("resumen"):
+            evidencia = ec_blocks_post[i]["resumen"]
+            ev_source = f"blocks[{i}] id={ec_blocks_post[i].get('id')}"
+        else:
+            evidencia = ec_fallback
+            ev_source = "fallback_text"
+
+        r_ec = evaluar_estudios_complementarios(
+            criterio_text=criterio_ec,
+            evidencia_postulante=evidencia,
+            debug=debug
+        )
+
+        puntaje = 0
+        if str(modo).lower() == "puntaje":
+            try:
+                vnum = int(valor) if str(valor).isdigit() else 0
+            except Exception:
+                vnum = 0
+            puntaje = vnum if r_ec.get("estado") == "CUMPLE" else 0
+            ec_puntaje_total += puntaje
+        else:
+            # eliminatorio cumpla/no cumpla
+            # (si tu JSON usa otra convención, aquí se ajusta)
+            if r_ec.get("estado") == "NO_CUMPLE":
+                ec_eliminatorio_no_cumple = True
+
+        ec_results.append({
+            "id": cb.get("id", f"EC.{i+1}"),
+            "estado": r_ec.get("estado"),
+            "evidencia": r_ec.get("evidencia"),
+            "justificacion": r_ec.get("justificacion"),
+            "confianza": r_ec.get("confianza"),
+            "modo_evaluacion": modo,
+            "valor": valor,
+            "puntaje": puntaje,
+            "_meta": {
+                "criterio_row": criterio_ec_row,
+                "evidencia_source": ev_source,
+                "modelo": r_ec["_llm_meta"]["model"],
+                "timestamp": r_ec["_llm_meta"]["timestamp"],
+            }
+        })
+
+
+    # --- ExpGeneral ---
+    criteria_eg_lines = criteria["criterios"]["EG"]["lines"]
+    eg_lines_post = get_ec_blocks(p)
+    eg_fallback = get_ec_fallback_text(p)
+
+    ec_results = []
+    ec_puntaje_total = 0
+    ec_eliminatorio_no_cumple = False
+
+    for i, cb in enumerate(criteria_ec_blocks):
+        criterio_ec = cb["criterio_item"]["text"]
+        criterio_ec_row = cb["criterio_item"].get("row")
+        modo = cb.get("modo_evaluacion")
+        valor = cb.get("valor")
+
+        if i < len(ec_blocks_post) and ec_blocks_post[i].get("resumen"):
+            evidencia = ec_blocks_post[i]["resumen"]
+            ev_source = f"blocks[{i}] id={ec_blocks_post[i].get('id')}"
+        else:
+            evidencia = ec_fallback
+            ev_source = "fallback_text"
+
+        r_ec = evaluar_estudios_complementarios(
+            criterio_text=criterio_ec,
+            evidencia_postulante=evidencia,
+            debug=debug
+        )
+
+        puntaje = 0
+        if str(modo).lower() == "puntaje":
+            try:
+                vnum = int(valor) if str(valor).isdigit() else 0
+            except Exception:
+                vnum = 0
+            puntaje = vnum if r_ec.get("estado") == "CUMPLE" else 0
+            ec_puntaje_total += puntaje
+        else:
+            # eliminatorio cumpla/no cumpla
+            # (si tu JSON usa otra convención, aquí se ajusta)
+            if r_ec.get("estado") == "NO_CUMPLE":
+                ec_eliminatorio_no_cumple = True
+
+        ec_results.append({
+            "id": cb.get("id", f"EC.{i+1}"),
+            "estado": r_ec.get("estado"),
+            "evidencia": r_ec.get("evidencia"),
+            "justificacion": r_ec.get("justificacion"),
+            "confianza": r_ec.get("confianza"),
+            "modo_evaluacion": modo,
+            "valor": valor,
+            "puntaje": puntaje,
+            "_meta": {
+                "criterio_row": criterio_ec_row,
+                "evidencia_source": ev_source,
+                "modelo": r_ec["_llm_meta"]["model"],
+                "timestamp": r_ec["_llm_meta"]["timestamp"],
+            }
+        })
+
+
+    return {
+        "dni": dni,
+        "nombre_full": nombre,
+        "FA": {
+            "estado": fa.get("estado"),
+            "evidencia": fa.get("evidencia"),
+            "justificacion": fa.get("justificacion"),
+            "confianza": fa.get("confianza"),
+            "eliminatorio": True,
+        },
+        "EC": {
+            "blocks": ec_results,
+            "puntaje_total": ec_puntaje_total,
+            "eliminatorio_no_cumple": ec_eliminatorio_no_cumple
+        },
+        "_meta": {
+            "evaluated_at": ts(),
+            "fa_criterio_row": criterio_fa_row,
+            "modelo": fa["_llm_meta"]["model"],
+            "timestamp": fa["_llm_meta"]["timestamp"],
+        }
+    }
+
+
+def resumen_proceso(resultados: List[Dict[str, Any]]) -> Dict[str, Any]:
+    total = len(resultados)
+    fa_cumple = sum(1 for r in resultados if (r.get("FA", {}) or {}).get("estado") == "CUMPLE")
+    fa_no = sum(1 for r in resultados if (r.get("FA", {}) or {}).get("estado") == "NO_CUMPLE")
+    fa_inf = sum(1 for r in resultados if (r.get("FA", {}) or {}).get("estado") == "INFO_INSUFICIENTE")
+
+    ec_elim = sum(1 for r in resultados if (r.get("EC", {}) or {}).get("eliminatorio_no_cumple") is True)
+
+    # top puntajes EC
+    top = sorted(
+        [{"dni": r.get("dni",""), "nombre_full": r.get("nombre_full",""), "ec_puntaje": (r.get("EC",{}) or {}).get("puntaje_total", 0)}
+         for r in resultados],
+        key=lambda x: x["ec_puntaje"],
+        reverse=True
+    )[:10]
+
+    return {
+        "total_postulantes": total,
+        "FA": {"CUMPLE": fa_cumple, "NO_CUMPLE": fa_no, "INFO_INSUFICIENTE": fa_inf},
+        "EC": {"eliminatorio_no_cumple": ec_elim},
+        "top_10_ec_puntaje": top,
+        "generated_at": ts()
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", required=True, help="Ruta raíz con carpetas de procesos")
+    ap.add_argument("--only-proc", default="", help="Nombre que contenga el proceso (filtro)")
+    ap.add_argument("--limit", type=int, default=0, help="Limitar postulantes por proceso (0=sin límite)")
+    ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--write-resumen", action="store_true", help="Genera evaluacion_resumen.json")
+    args = ap.parse_args()
+
+    root = Path(args.root)
+    if not root.exists():
+        raise SystemExit(f"No existe root: {root}")
+
+    only = norm(args.only_proc).lower()
+
+    procesos = [p for p in root.iterdir() if p.is_dir()]
+    procesos.sort(key=lambda p: p.name.lower())
+
+    print(f"[task_41] root={root} procesos={len(procesos)}")
+
+    ok = 0
+    skip = 0
+    fail = 0
+
+    for proc_dir in procesos:
+        proceso = proc_dir.name
+        if only and only not in proceso.lower():
+            continue
+
+        out_dir = proc_dir / OUT_FOLDER_NAME
+        criteria_path = out_dir / IN_CRITERIA
+        consolidado_path = out_dir / IN_CONSOLIDADO
+
+        print(f"\n[task_41] PROCESO: {proceso}")
+        print(f"[task_41]   out_dir={out_dir}")
+
+        if not out_dir.exists():
+            print(f"[task_41]   SKIP: no existe 011")
+            skip += 1
+            continue
+        if not criteria_path.exists():
+            print(f"[task_41]   SKIP: falta {IN_CRITERIA}")
+            skip += 1
+            continue
+        if not consolidado_path.exists():
+            print(f"[task_41]   SKIP: falta {IN_CONSOLIDADO}")
+            skip += 1
+            continue
+
+        try:
+            criteria = json.loads(criteria_path.read_text(encoding="utf-8"))
+            postulantes = read_jsonl(consolidado_path)
+
+            if args.limit and args.limit > 0:
+                postulantes = postulantes[: args.limit]
+
+            print(f"[task_41]   postulantes={len(postulantes)}")
+
+            resultados = []
+            for idx, p in enumerate(postulantes, start=1):
+                nombre = p.get("nombre_full", "(sin nombre)")
+                print(f"[task_41]     ({idx}/{len(postulantes)}) evaluando => {nombre}")
+                resultados.append(eval_one_postulante(p, criteria, debug=args.debug))
+
+            out_eval = out_dir / OUT_EVAL
+            write_jsonl(out_eval, resultados)
+            print(f"[task_41]   ✅ generado: {out_eval.name}")
+
+            if args.write_resumen:
+                out_res = out_dir / OUT_RESUMEN
+                write_json(out_res, resumen_proceso(resultados))
+                print(f"[task_41]   ✅ generado: {out_res.name}")
+
+            ok += 1
+
+        except Exception as e:
+            print(f"[task_41]   FAIL: {repr(e)}")
+            fail += 1
+
+    print("")
+    print(f"[task_41] resumen: OK={ok} SKIP={skip} FAIL={fail}")
+
+
+if __name__ == "__main__":
+    main()

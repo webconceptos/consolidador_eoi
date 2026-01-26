@@ -5,24 +5,29 @@ import argparse
 import json
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
-from core.llm_client import evaluar_formacion, evaluar_estudios_complementarios
+#from core.llm_client import evaluar_formacion, evaluar_estudios_complementarios
+from core.openai_client import (
+    evaluar_formacion,
+    evaluar_estudios_complementarios,
+    evaluar_experiencia_general,
+    evaluar_experiencia_especifica,
+)
+
 
 OUT_FOLDER_NAME = "011. INSTALACIÓN DE COMITÉ"
+PROCESADOS_SUBFOLDER = "procesados"
 IN_CONSOLIDADO = "parsed_postulantes.jsonl"
 IN_CRITERIA = "criteria_evaluacion.json"
 OUT_EVAL = "evaluacion_postulantes.jsonl"
 OUT_RESUMEN = "evaluacion_resumen.json"
 
-
 def ts():
     return datetime.now().isoformat(timespec="seconds")
 
-
 def norm(s: str) -> str:
     return " ".join((s or "").strip().split())
-
 
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows = []
@@ -35,18 +40,66 @@ def read_jsonl(path: Path) -> List[Dict[str, Any]]:
                 rows.append(json.loads(line))
     return rows
 
-
 def write_jsonl(path: Path, rows: List[Dict[str, Any]]):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-
 def write_json(path: Path, obj: Dict[str, Any]):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
+def ensure_postulante_dict(p: Any) -> Dict[str, Any]:
+    """
+    Asegura que 'p' sea un dict válido.
+    - Si ya es dict => OK
+    - Si es str con JSON => json.loads
+    - Si no se puede => lanza ValueError
+    """
+    if isinstance(p, dict):
+        return p
+
+    if isinstance(p, str):
+        s = p.strip()
+        if not s:
+            raise ValueError("Postulante vacío (string vacío)")
+        try:
+            obj = json.loads(s)
+        except Exception as e:
+            raise ValueError(f"Postulante no es JSON válido (string): {e}")
+        if not isinstance(obj, dict):
+            raise ValueError(f"Postulante JSON no es objeto dict, es {type(obj).__name__}")
+        return obj
+
+    raise ValueError(f"Postulante tiene tipo inválido: {type(p).__name__}")
+
+def is_evaluable_postulante(p: Dict[str, Any]) -> Tuple[bool, str]:
+    # si no tiene DNI, ni lo intentes
+    dni = (p.get("dni") or "").strip()
+    if not dni:
+        return False, "sin DNI"
+
+    # experiencia: si no hay items y todo está en 0, no hay con qué evaluar
+    eg = p.get("exp_general") or {}
+    ee = p.get("exp_especifica") or {}
+
+    eg_items = eg.get("items") or []
+    ee_items = ee.get("items") or []
+
+    eg_dias = p.get("exp_general_dias", 0) or 0
+    ee_dias = p.get("exp_especifica_dias", 0) or 0
+
+    # si viene de PDF y no se extrajo nada, casi seguro falló parse/OCR
+    meta = p.get("_meta") or {}
+    tipo = (meta.get("tipo") or "").upper()
+
+    if (not eg_items and not ee_items) and (eg_dias == 0 and ee_dias == 0):
+        if tipo == "PDF":
+            return False, "PDF sin experiencia extraída (probable parse fallido / requiere OCR)"
+        return False, "sin experiencia extraída"
+
+    return True, "OK"
 
 def get_formacion_text(p: Dict[str, Any]) -> str:
     # 1) resumen directo
@@ -79,7 +132,6 @@ def get_formacion_text(p: Dict[str, Any]) -> str:
 
     return ""
 
-
 def get_ec_blocks(p: Dict[str, Any]) -> List[Dict[str, Any]]:
     ec = p.get("estudios_complementarios") or {}
     blocks = ec.get("blocks")
@@ -94,7 +146,6 @@ def get_ec_blocks(p: Dict[str, Any]) -> List[Dict[str, Any]]:
                 })
     return out
 
-
 def get_ec_fallback_text(p: Dict[str, Any]) -> str:
     for k in ("estudios_complementarios_resumen", "ec_resumen", "cursos_resumen"):
         v = p.get(k)
@@ -102,8 +153,65 @@ def get_ec_fallback_text(p: Dict[str, Any]) -> str:
             return v.strip()
     return ""
 
+def get_experiencia_general_text(p: Dict[str, Any]) -> str:
+    """
+    Arma evidencia EG SOLO con empresa | cargo | fechas,
+    y total años/días ya calculados (sin solapamiento) si existen.
+    """
 
-def eval_one_postulante(p: Dict[str, Any], criteria: Dict[str, Any], debug: bool = False) -> Dict[str, Any]:
+    # 1) total calculado (prioridad)
+    total_anios = (
+        p.get("exp_general_anios_no_solap") or
+        p.get("exp_general_total_anios") or
+        p.get("exp_general_anios") or
+        None
+    )
+    total_dias = (
+        p.get("exp_general_dias_no_solap") or
+        p.get("exp_general_total_dias") or
+        p.get("exp_general_dias") or
+        None
+    )
+
+    # 2) lista de items (empresa/cargo/fechas). Ajusta keys si tus nombres difieren.
+    items = (
+        p.get("exp_general_items") or
+        (p.get("exp_general") or {}).get("items") or
+        []
+    )
+
+    lines = []
+    for it in items:
+        emp = (it.get("empresa") or it.get("entidad") or it.get("institucion") or "").strip()
+        cargo = (it.get("cargo") or it.get("puesto") or "").strip()
+        fi = (it.get("fecha_inicio") or it.get("fi") or "").strip()
+        ff = (it.get("fecha_fin") or it.get("ff") or "").strip()
+
+        if not (emp or cargo or fi or ff):
+            continue
+
+        # SOLO empresa | cargo | fechas
+        seg = " | ".join([x for x in [emp, cargo, f"{fi} - {ff}".strip()] if x])
+        if seg:
+            lines.append(seg)
+
+    head = []
+    if total_anios is not None:
+        head.append(f"total_anios_calc: {total_anios}")
+    if total_dias is not None:
+        head.append(f"total_dias_calc: {total_dias}")
+
+    out = []
+    if head:
+        out.append("\n".join(head))
+    if lines:
+        out.append("experiencias:\n- " + "\n- ".join(lines))
+    else:
+        out.append("experiencias: (sin registros)")
+
+    return "\n\n".join(out).strip()
+
+def eval_one_postulante_old(p: Dict[str, Any], criteria: Dict[str, Any], debug: bool = False) -> Dict[str, Any]:
     nombre = p.get("nombre_full", "(sin nombre)")
     dni = p.get("dni", "")
 
@@ -262,6 +370,166 @@ def eval_one_postulante(p: Dict[str, Any], criteria: Dict[str, Any], debug: bool
         }
     }
 
+def eval_one_postulante(p: Dict[str, Any], criteria: Dict[str, Any], debug: bool = False) -> Dict[str, Any]:
+    nombre = p.get("nombre_full", "(sin nombre)")
+    dni = p.get("dni", "")
+
+    # --- FA ---
+    criterio_fa = criteria["criterios"]["FA"]["criterio_item"]["text"]
+    criterio_fa_row = criteria["criterios"]["FA"]["criterio_item"].get("row")
+
+    formacion = get_formacion_text(p)
+
+    fa = evaluar_formacion(
+        criterio_text=criterio_fa,
+        formacion_postulante=formacion,
+        debug=debug,
+    )
+
+    # --- EC ---
+    criteria_ec_blocks = criteria["criterios"]["EC"]["blocks"]
+    ec_blocks_post = get_ec_blocks(p)
+    ec_fallback = get_ec_fallback_text(p)
+
+    ec_results = []
+    ec_puntaje_total = 0
+    ec_eliminatorio_no_cumple = False
+
+    for i, cb in enumerate(criteria_ec_blocks):
+        criterio_ec = cb["criterio_item"]["text"]
+        criterio_ec_row = cb["criterio_item"].get("row")
+        modo = cb.get("modo_evaluacion")
+        valor = cb.get("valor")
+
+        if i < len(ec_blocks_post) and ec_blocks_post[i].get("resumen"):
+            evidencia = ec_blocks_post[i]["resumen"]
+            ev_source = f"blocks[{i}] id={ec_blocks_post[i].get('id')}"
+        else:
+            evidencia = ec_fallback
+            ev_source = "fallback_text"
+
+        r_ec = evaluar_estudios_complementarios(
+            criterio_text=criterio_ec,
+            evidencia_postulante=evidencia,
+            debug=debug
+        )
+
+        puntaje = 0
+        if str(modo).lower() == "puntaje":
+            try:
+                vnum = int(valor) if str(valor).isdigit() else 0
+            except Exception:
+                vnum = 0
+            puntaje = vnum if r_ec.get("estado") == "CUMPLE" else 0
+            ec_puntaje_total += puntaje
+        else:
+            if r_ec.get("estado") == "NO_CUMPLE":
+                ec_eliminatorio_no_cumple = True
+
+        ec_results.append({
+            "id": cb.get("id", f"EC.{i+1}"),
+            "estado": r_ec.get("estado"),
+            "evidencia": r_ec.get("evidencia"),
+            "justificacion": r_ec.get("justificacion"),
+            "confianza": r_ec.get("confianza"),
+            "modo_evaluacion": modo,
+            "valor": valor,
+            "puntaje": puntaje,
+            "_meta": {
+                "criterio_row": criterio_ec_row,
+                "evidencia_source": ev_source,
+                "modelo": r_ec["_llm_meta"]["model"],
+                "timestamp": r_ec["_llm_meta"]["timestamp"],
+            }
+        })
+
+    # =====================================================================
+    # ✅ NUEVO: --- EG (Experiencia General) ---
+    # =====================================================================
+    criteria_eg_lines = criteria["criterios"]["EG"]["lines"]
+
+    # evidencia EG desde parsed_postulante.jsonl (ya calculada sin solapamiento)
+    # Ideal: empresa | cargo | fechas + total años/días
+    eg_evidencia = get_experiencia_general_text(p)  # <-- IMPORTANTE
+
+    eg_results = []
+    eg_puntaje_total = 0
+    eg_eliminatorio_no_cumple = False
+
+    for i, ln in enumerate(criteria_eg_lines):
+        criterio_eg = ln["criterio_item"]["text"]
+        criterio_eg_row = ln["criterio_item"].get("row")
+        modo = ln.get("modo_evaluacion")
+        valor = ln.get("valor")
+
+        r_eg = evaluar_experiencia_general(
+            criterio_text=criterio_eg,
+            evidencia_postulante=eg_evidencia,
+            debug=debug
+        )
+
+        puntaje = 0
+        if str(modo).lower() == "puntaje":
+            # muchos criterios traen "XX" -> no es número, queda 0
+            try:
+                vnum = int(valor) if str(valor).isdigit() else 0
+            except Exception:
+                vnum = 0
+            puntaje = vnum if r_eg.get("estado") == "CUMPLE" else 0
+            eg_puntaje_total += puntaje
+        else:
+            # eliminatorio Cumple/NoCumple (primera línea usualmente)
+            if r_eg.get("estado") == "NO_CUMPLE":
+                eg_eliminatorio_no_cumple = True
+
+        eg_results.append({
+            "id": ln.get("id", f"EG.{i+1}"),
+            "estado": r_eg.get("estado"),
+            "anios_detectados": r_eg.get("anios_detectados"),
+            "evidencia": r_eg.get("evidencia"),
+            "justificacion": r_eg.get("justificacion"),
+            "confianza": r_eg.get("confianza"),
+            "modo_evaluacion": modo,
+            "valor": valor,
+            "puntaje": puntaje,
+            "_meta": {
+                "criterio_row": criterio_eg_row,
+                "evidencia_source": "parsed_postulante.jsonl",
+                "modelo": r_eg["_llm_meta"]["model"],
+                "timestamp": r_eg["_llm_meta"]["timestamp"],
+            }
+        })
+
+    # ---------------------------------------------------------------------
+
+    return {
+        "dni": dni,
+        "nombre_full": nombre,
+        "FA": {
+            "estado": fa.get("estado"),
+            "evidencia": fa.get("evidencia"),
+            "justificacion": fa.get("justificacion"),
+            "confianza": fa.get("confianza"),
+            "eliminatorio": True,
+        },
+        "EC": {
+            "blocks": ec_results,
+            "puntaje_total": ec_puntaje_total,
+            "eliminatorio_no_cumple": ec_eliminatorio_no_cumple
+        },
+        # ✅ NUEVO: EG agregado (no toca FA/EC)
+        "EG": {
+            "lines": eg_results,
+            "puntaje_total": eg_puntaje_total,
+            "eliminatorio_no_cumple": eg_eliminatorio_no_cumple
+        },
+        "_meta": {
+            "evaluated_at": ts(),
+            "fa_criterio_row": criterio_fa_row,
+            "modelo": fa["_llm_meta"]["model"],
+            "timestamp": fa["_llm_meta"]["timestamp"],
+        }
+    }
 
 def resumen_proceso(resultados: List[Dict[str, Any]]) -> Dict[str, Any]:
     total = len(resultados)
@@ -286,7 +554,6 @@ def resumen_proceso(resultados: List[Dict[str, Any]]) -> Dict[str, Any]:
         "top_10_ec_puntaje": top,
         "generated_at": ts()
     }
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -318,7 +585,7 @@ def main():
             continue
 
         out_dir = proc_dir / OUT_FOLDER_NAME
-        criteria_path = out_dir / IN_CRITERIA
+        criteria_path = out_dir / PROCESADOS_SUBFOLDER / IN_CRITERIA
         consolidado_path = out_dir / IN_CONSOLIDADO
 
         print(f"\n[task_41] PROCESO: {proceso}")
@@ -347,19 +614,44 @@ def main():
             print(f"[task_41]   postulantes={len(postulantes)}")
 
             resultados = []
+            #for idx, p in enumerate(postulantes, start=1):
+            #    nombre = p.get("nombre_full", "(sin nombre)")
+            #    print(f"[task_41]     ({idx}/{len(postulantes)}) evaluando => {nombre}")
+            #    resultados.append(eval_one_postulante(p, criteria, debug=args.debug))
+
+#########################################
+
             for idx, p in enumerate(postulantes, start=1):
+                p = ensure_postulante_dict(p)  # tu normalizador
+
                 nombre = p.get("nombre_full", "(sin nombre)")
+                ok, motivo = is_evaluable_postulante(p)
+
                 print(f"[task_41]     ({idx}/{len(postulantes)}) evaluando => {nombre}")
+
+                if not ok:
+                    print(f"[task_41]       SKIP => {motivo}")
+                    resultados.append({
+                        "dni": p.get("dni", ""),
+                        "nombre_full": nombre,
+                        "estado": "NO_EVALUABLE",
+                        "motivo": motivo,
+                        "source_file": p.get("source_file") or (p.get("_meta") or {}).get("ruta", ""),
+                    })
+                    continue
+
                 resultados.append(eval_one_postulante(p, criteria, debug=args.debug))
+
+##########################################
 
             out_eval = out_dir / OUT_EVAL
             write_jsonl(out_eval, resultados)
-            print(f"[task_41]   ✅ generado: {out_eval.name}")
+            print(f"[task_41]  generado: {out_eval.name}")
 
             if args.write_resumen:
                 out_res = out_dir / OUT_RESUMEN
                 write_json(out_res, resumen_proceso(resultados))
-                print(f"[task_41]   ✅ generado: {out_res.name}")
+                print(f"[task_41]  generado: {out_res.name}")
 
             ok += 1
 

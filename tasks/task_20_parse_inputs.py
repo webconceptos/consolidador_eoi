@@ -25,6 +25,7 @@ from typing import Dict, Any, List, Tuple, Optional
 
 from parsers.eoi_excel import parse_eoi_excel
 from parsers.eoi_pdf import parse_eoi_pdf  # asumiendo que ya lo tienes
+from parsers.eoi_pdf_pro import parse_eoi_pdf_pro
 
 
 OUT_FOLDER_NAME = "011. INSTALACIÓN DE COMITÉ"
@@ -291,7 +292,8 @@ def main():
                     data = parse_eoi_excel(fp)
                     tipo = "EXCEL"
                 else:
-                    data = parse_eoi_pdf(fp, use_ocr=use_ocr)
+                    #data = parse_eoi_pdf(fp, use_ocr=use_ocr)
+                    data = parse_eoi_pdf_pro(fp, use_ocr=use_ocr)
                     tipo = "PDF"
 
                 # normalizaciones finales (consistentes)

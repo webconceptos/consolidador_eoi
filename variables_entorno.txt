@@ -1,0 +1,77 @@
+1) Diagnóstico rápido: ¿qué variable lo está forzando?
+
+En tu PowerShell (con el venv activo), corre:
+
+$env:REQUESTS_CA_BUNDLE
+$env:SSL_CERT_FILE
+$env:PIP_CERT
+$env:HTTP_PROXY
+$env:HTTPS_PROXY
+
+
+Si alguna de las primeras 3 muestra esa ruta D:\MIA\...cacert.pem, ahí está el culpable.
+
+2) Solución inmediata (solo para esta sesión)
+
+Borra esas variables en la sesión actual y reintenta:
+
+Remove-Item Env:REQUESTS_CA_BUNDLE -ErrorAction SilentlyContinue
+Remove-Item Env:SSL_CERT_FILE -ErrorAction SilentlyContinue
+Remove-Item Env:PIP_CERT -ErrorAction SilentlyContinue
+
+
+Luego:
+
+python -m pip install -r requirements.txt
+
+3) Solución “bien hecha” (persistente): eliminarlo del entorno del usuario
+
+Si el problema vuelve al cerrar la terminal, entonces está guardado como variable de usuario o sistema.
+
+Ver variables persistentes del usuario (rápido)
+[Environment]::GetEnvironmentVariable("REQUESTS_CA_BUNDLE","User")
+[Environment]::GetEnvironmentVariable("SSL_CERT_FILE","User")
+[Environment]::GetEnvironmentVariable("PIP_CERT","User")
+
+
+Si sale esa ruta, bórralas:
+
+[Environment]::SetEnvironmentVariable("REQUESTS_CA_BUNDLE",$null,"User")
+[Environment]::SetEnvironmentVariable("SSL_CERT_FILE",$null,"User")
+[Environment]::SetEnvironmentVariable("PIP_CERT",$null,"User")
+
+
+Cierra y vuelve a abrir PowerShell (para que recargue variables) y reintenta el pip.
+
+4) Si el origen está en la config de pip (pip.ini)
+
+Revisa si pip está configurado con un cert fijo:
+
+pip config list -v
+
+
+Si ves algo como global.cert=...cacert.pem, elimínalo:
+
+pip config unset global.cert
+
+
+y vuelve a instalar:
+
+python -m pip install -r requirements.txt
+
+5) Plan B si estás en red corporativa con proxy (solo si aplica)
+
+Si tu institución usa proxy/inspección SSL, necesitarás o bien configurar proxy, o instalar el CA corporativo. En ese caso dime si tienes proxy (valores en HTTP_PROXY/HTTPS_PROXY) y te doy el set correcto.
+
+Si quieres el “atajo nuclear” (diagnóstico + fix en 4 comandos)
+
+Pega esto tal cual:
+
+Remove-Item Env:REQUESTS_CA_BUNDLE -ErrorAction SilentlyContinue
+Remove-Item Env:SSL_CERT_FILE -ErrorAction SilentlyContinue
+Remove-Item Env:PIP_CERT -ErrorAction SilentlyContinue
+python -m pip install -r requirements.txt
+
+
+
+

@@ -30,7 +30,7 @@ TASK_INIT_TEMPLATE = "task_15_init_cuadro_evaluacion.py"  # crea Cuadro_Evaluaci
 TASK_CRITERIA = "task_16_detect_criteria.py"           # genera criteria_evaluacion.json (antes task_05)
 TASK_PARSE_POST = "task_20_parse_inputs.py"            # genera parsed_postulantes.jsonl
 TASK_FILL_EVAL = "task_40_fill_cuadro_final.py"   # llena plantilla con postulantes
-TASK_EVAL_LLM = "task_41_eval_postulantes_openai.py"   # eval FA/EC/etc (por ahora lo pausas, pero queda)
+TASK_EVAL_LLM = "task_41_eval_procesos_openai.py"   # eval FA/EC/etc (por ahora lo pausas, pero queda)
 
 CFG_LAYOUT_NAME = "config_layout.json"
 INIT_SUMMARY_NAME = "init_cuadro_summary.json"
@@ -191,7 +191,6 @@ def run_cmd_m(cmd: List[str], cwd: Optional[Path] = None, env: Optional[Dict[str
 def read_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
-
 def exists_or_warn(p: Path, label: str, strict: bool) -> bool:
     if p.exists():
         return True
@@ -200,7 +199,6 @@ def exists_or_warn(p: Path, label: str, strict: bool) -> bool:
         raise SystemExit(f"[global] ERROR: {msg}")
     log(f"WARN: {msg}")
     return False
-
 
 @dataclass
 class ProcPaths:
@@ -227,7 +225,6 @@ class ProcPaths:
             "collect_summary": str(self.collect_summary),
         }
 
-
 def build_paths(proc_dir: Path) -> ProcPaths:
     out_011 = proc_dir / OUT_011
     proc_out = out_011 / PROCESADOS
@@ -244,7 +241,6 @@ def build_paths(proc_dir: Path) -> ProcPaths:
         collect_summary=out_011 / COLLECT_SUMMARY_JSON,
     )
 
-
 def find_process_dirs(root: Path, only_proc: str = "") -> List[Path]:
     if not root.exists():
         raise SystemExit(f"[global] ERROR: root no existe: {root}")
@@ -255,7 +251,6 @@ def find_process_dirs(root: Path, only_proc: str = "") -> List[Path]:
     if only_proc:
         procs = [p for p in procs if p.name == only_proc]
     return procs
-
 
 def resolve_tasks_dir(root: Path, tasks_dir: str) -> Path:
     td = Path(tasks_dir)
@@ -271,15 +266,12 @@ def resolve_tasks_dir(root: Path, tasks_dir: str) -> Path:
         return td3
     raise SystemExit(f"[global] ERROR: no encuentro tasks_dir: {tasks_dir}")
 
-
 def script_path(tasks_dir: Path, name: str) -> Path:
     p = tasks_dir / name
     return p
 
-
 def py() -> str:
     return sys.executable
-
 
 def find_filled_excel(paths: ProcPaths) -> Optional[Path]:
     """
@@ -360,7 +352,6 @@ def step_parse_postulantes(tasks_dir: Path, proc_dir: Path, dry_run: bool, debug
         cmd.append("--debug")
     run_cmd_m(cmd, dry_run=dry_run)
 
-
 def step_fill_cuadro(tasks_dir: Path, proc_dir: Path, dry_run: bool, debug: bool, limit: int = 0):
     """
     Task_40: llena el cuadro con los postulantes parseados.
@@ -389,7 +380,7 @@ def step_detect_criteria(tasks_dir: Path, proc_dir: Path, dry_run: bool, debug: 
         cmd.append("--debug")
     run_cmd_m(cmd, dry_run=dry_run)
 
-def step_eval_llm(tasks_dir: Path, paths: ProcPaths, dry_run: bool, debug: bool, limit: int = 1):
+def step_eval_llm_old(tasks_dir: Path, paths: ProcPaths, dry_run: bool, debug: bool, limit: int = 1):
     """
     Task_41: evalúa con OpenAI (FA/EC...). Por ahora lo tienes en pausa,
     pero queda listo si lo reactivas.
@@ -397,9 +388,13 @@ def step_eval_llm(tasks_dir: Path, paths: ProcPaths, dry_run: bool, debug: bool,
     script = script_path(tasks_dir, TASK_EVAL_LLM)
     if not script.exists():
         raise SystemExit(f"[global] ERROR: no existe {script}")
+    
+    print(paths)
+    exit()
 
     cmd = [
         py(), str(script),
+        #"--root" , 
         "--criteria", str(paths.criteria_json),
         "--postulantes", str(paths.parsed_jsonl),
         "--limit", str(limit),
@@ -407,6 +402,30 @@ def step_eval_llm(tasks_dir: Path, paths: ProcPaths, dry_run: bool, debug: bool,
     if debug:
         cmd.append("--debug")
     run_cmd_m(cmd, dry_run=dry_run)
+
+
+def step_eval_llm(tasks_dir: Path, proc_dir: Path, dry_run: bool, debug: bool, limit: int = 0):
+    """
+    Task_41: evalúa con OpenAI (FA/EC...).
+    """
+    script = script_path(tasks_dir, TASK_EVAL_LLM)
+    if not script.exists():
+        raise SystemExit(f"[global] ERROR: no existe {script}")
+
+    cmd = [
+        py(), str(script),
+        "--root", str(proc_dir.parent),
+        "--only-proc", proc_dir.name,
+    ]
+    
+    if limit > 0:
+        cmd += ["--limit", str(limit)]
+
+    if debug:
+        cmd.append("--debug")
+
+    run_cmd_m(cmd, dry_run=dry_run)
+
 
 
 # -----------------------------
@@ -431,6 +450,7 @@ def main():
     ap.add_argument("--allow-bad-pdf", action="store_true", help="Permite PDFs corruptos en collect_files")
     ap.add_argument("--limit", type=int, default=0, help="Limita postulantes en fill/eval (0=no limita)")
     ap.add_argument("--strict", action="store_true", help="Falla si falta algún archivo esperado")
+    ap.add_argument("--write-resumen", action="store_true", help="Registrar los resultados")
 
     args = ap.parse_args()
     hora_inicio = datetime.now()
@@ -440,7 +460,7 @@ def main():
     tasks_dir = resolve_tasks_dir(root, args.tasks_dir)
 
     # Si no selecciona pasos explícitos => modo “pipeline mínimo”
-    if not any([args.do_init_template, args.do_layout, args.do_parse, args.do_fill, args.do_criteria, args.do_eval]):
+    if not any([args.do_init_template, args.do_layout, args.do_parse, args.do_fill, args.do_criteria, args.do_eval, args.write_resumen]):
         # “Default sensato”: parse + fill + criteria (sin LLM)
         args.do_init_template = True
         args.do_layout = True
@@ -448,7 +468,9 @@ def main():
         args.do_parse = True
         args.do_fill = True
         args.do_criteria = True
-        args.do_eval = False
+        args.do_eval = True
+        args.write_resumen = True
+
 
     procs = find_process_dirs(root, args.only_proc)
     if not procs:
@@ -535,13 +557,13 @@ def main():
 
         # 7) eval llm (opcional) TASK_41
         if args.do_eval:
-            # por defecto: 1 postulante si no seteas limit
-            lim = args.limit if args.limit > 0 else 1
             if not args.dry_run:
                 # estas dos son indispensables
                 exists_or_warn(paths.parsed_jsonl, "parsed_postulantes.jsonl", True)
                 exists_or_warn(paths.criteria_json, "criteria_evaluacion.json", True)
-            step_eval_llm(tasks_dir, paths, args.dry_run, args.debug, limit=lim)
+            #step_eval_llm(tasks_dir, paths, args.dry_run, args.debug, limit=lim)
+            step_eval_llm(tasks_dir, proc_dir, args.dry_run, args.debug, limit=args.limit)
+
 
     print(f"[global] Finalizando pipeline global: {ts()}")
     hora_fin = datetime.now()

@@ -4,8 +4,9 @@
 import argparse
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date
 from typing import Dict, Any, List, Optional, Tuple
+
 
 #from core.llm_client import evaluar_formacion, evaluar_estudios_complementarios
 from core.openai_client import (
@@ -132,6 +133,47 @@ def get_formacion_text(p: Dict[str, Any]) -> str:
 
     return ""
 
+def _parse_fecha_any(x: str) -> date | None:
+    """
+    Intenta parsear fechas comunes:
+    YYYY-MM-DD
+    DD/MM/YYYY
+    """
+    x = (x or "").strip()
+    if not x:
+        return None
+
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(x, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+def get_formacion_fecha_minima(p: Dict[str, Any]) -> str:
+    """
+    Retorna la fecha mínima (más antigua) de Formación Académica.
+    Devuelve string ISO (YYYY-MM-DD) o "" si no hay datos válidos.
+    """
+    fo = p.get("formacion_obligatoria") or {}
+    items = fo.get("items") or []
+    fechas: list[date] = []
+
+    if isinstance(items, list):
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+
+            f_raw = it.get("fecha")
+            f = _parse_fecha_any(f_raw)
+            if f:
+                fechas.append(f)
+
+    if not fechas:
+        return ""
+
+    return min(fechas).isoformat()
+
 def get_ec_blocks(p: Dict[str, Any]) -> List[Dict[str, Any]]:
     ec = p.get("estudios_complementarios") or {}
     blocks = ec.get("blocks")
@@ -159,57 +201,92 @@ def get_experiencia_general_text(p: Dict[str, Any]) -> str:
     y total años/días ya calculados (sin solapamiento) si existen.
     """
 
-    # 1) total calculado (prioridad)
-    total_anios = (
-        p.get("exp_general_anios_no_solap") or
-        p.get("exp_general_total_anios") or
-        p.get("exp_general_anios") or
-        None
-    )
-    total_dias = (
-        p.get("exp_general_dias_no_solap") or
-        p.get("exp_general_total_dias") or
-        p.get("exp_general_dias") or
-        None
-    )
+    # 1) Obtiene experiencia general desde _fill_payload (si existe)
+    _fill_payload=p.get("_fill_payload", {} or {})                  
+    
+    exp_general_total_text=_fill_payload.get("exp_general_total_text")
+    exp_general_resumen_text=_fill_payload.get("exp_general_resumen_text")  
+    exp_general_detalle_text=_fill_payload.get("exp_general_detalle_text")
 
-    # 2) lista de items (empresa/cargo/fechas). Ajusta keys si tus nombres difieren.
-    items = (
-        p.get("exp_general_items") or
-        (p.get("exp_general") or {}).get("items") or
-        []
-    )
-
-    lines = []
-    for it in items:
-        emp = (it.get("empresa") or it.get("entidad") or it.get("institucion") or "").strip()
-        cargo = (it.get("cargo") or it.get("puesto") or "").strip()
-        fi = (it.get("fecha_inicio") or it.get("fi") or "").strip()
-        ff = (it.get("fecha_fin") or it.get("ff") or "").strip()
-
-        if not (emp or cargo or fi or ff):
-            continue
-
-        # SOLO empresa | cargo | fechas
-        seg = " | ".join([x for x in [emp, cargo, f"{fi} - {ff}".strip()] if x])
-        if seg:
-            lines.append(seg)
+    experiencia_general=  (exp_general_total_text if exp_general_total_text else "") + "\n" + \
+                          "Con el siguiente resumen :\n" + (exp_general_resumen_text if exp_general_resumen_text else "")  
+    
+    #experiencia_general_detalle= (exp_general_total_text if exp_general_total_text else "") + "\n" + "Con el siguiente detalle :\n" + (exp_general_detalle_text if exp_general_detalle_text else "")  
+    experiencia_general_detalle=  None
 
     head = []
-    if total_anios is not None:
-        head.append(f"total_anios_calc: {total_anios}")
-    if total_dias is not None:
-        head.append(f"total_dias_calc: {total_dias}")
+    if experiencia_general is not None:
+        head.append(f"Experiencia General, calculada sin solapamientos: {experiencia_general}")
+    if experiencia_general_detalle is not None:
+        head.append(f"Experiencia General con descripción, calculada sin solapamientos:: {experiencia_general_detalle}")
 
     out = []
     if head:
         out.append("\n".join(head))
-    if lines:
-        out.append("experiencias:\n- " + "\n- ".join(lines))
     else:
         out.append("experiencias: (sin registros)")
 
     return "\n\n".join(out).strip()
+
+
+def get_experiencia_especifica_text(p: Dict[str, Any]) -> str:
+    """
+    Arma evidencia EE SOLO con empresa | cargo | fechas,
+    y total años/días ya calculados (sin solapamiento) si existen.
+    """
+    # 1) Obtiene experiencia especifica desde _fill_payload (si existe)
+    _fill_payload=p.get("_fill_payload", {} or {})                  
+    
+    exp_especifica_total_text=_fill_payload.get("exp_especifica_total_text")
+    exp_especifica_resumen_text=_fill_payload.get("exp_especifica_resumen_text")  
+    exp_especifica_detalle_text=_fill_payload.get("exp_especifica_detalle_text")
+
+    experiencia_especifica=  (exp_especifica_total_text if exp_especifica_total_text else "") + "\n" + \
+                          "Con el siguiente resumen :\n" + (exp_especifica_resumen_text if exp_especifica_resumen_text else "")  
+    
+    #experiencia_especifica_detalle= (exp_especifica_total_text if exp_especifica_total_text else "") + "\n" + "Con el siguiente detalle :\n" + (exp_especifica_detalle_text if exp_especifica_detalle_text else "")  
+    experiencia_especifica_detalle=  None
+
+    # 2) lista de items (empresa/cargo/fechas). Ajusta keys si tus nombres difieren.
+#    exp_especifica= p.get("exp_especifica") or {}
+
+    #    items = (
+    #        exp_especifica.get("items")  or
+    #        []
+    #    )
+
+    #    lines = []
+    #    for it in items:
+    #        emp = (it.get("empresa") or it.get("entidad") or it.get("institucion") or "").strip()
+    #        cargo = (it.get("cargo") or it.get("puesto") or "").strip()
+    #        fi = (it.get("fecha_inicio") or it.get("fi") or "").strip()
+    #        ff = (it.get("fecha_fin") or it.get("ff") or "").strip()
+    #        desc = (it.get("descripcion") or it.get("desc") or "").strip()
+
+    #        if not (emp or cargo or fi or ff):
+    #            continue
+
+        # SOLO empresa | cargo | fechas
+    #        seg = " | ".join([x for x in [emp, cargo, f"{fi} - {ff}".strip()] if x])
+    #        if seg:
+    #            lines.append(seg)
+
+    head = []
+    if experiencia_especifica is not None:
+        head.append(f"Experiencia Específica, calculada sin solapamientos: {experiencia_especifica}")
+    if experiencia_especifica_detalle is not None:
+        head.append(f"Experiencia Específica con descripción, calculada sin solapamientos:: {experiencia_especifica_detalle}")
+
+    out = []
+    if head:
+        out.append("\n".join(head))
+    #if lines: ##Se usara solo si hay items
+    #    out.append("experiencias:\n- " + "\n- ".join(lines))
+    else:
+        out.append("experiencias: (sin registros)")
+    
+    return "\n\n".join(out).strip()
+
 
 def eval_one_postulante_old(p: Dict[str, Any], criteria: Dict[str, Any], debug: bool = False) -> Dict[str, Any]:
     nombre = p.get("nombre_full", "(sin nombre)")
@@ -379,6 +456,7 @@ def eval_one_postulante(p: Dict[str, Any], criteria: Dict[str, Any], debug: bool
     criterio_fa_row = criteria["criterios"]["FA"]["criterio_item"].get("row")
 
     formacion = get_formacion_text(p)
+    fecha_formacion_minima = get_formacion_fecha_minima(p)
 
     fa = evaluar_formacion(
         criterio_text=criterio_fa,
@@ -444,14 +522,14 @@ def eval_one_postulante(p: Dict[str, Any], criteria: Dict[str, Any], debug: bool
         })
 
     # =====================================================================
-    # ✅ NUEVO: --- EG (Experiencia General) ---
+    # NUEVO: --- EG (Experiencia General) ---
     # =====================================================================
     criteria_eg_lines = criteria["criterios"]["EG"]["lines"]
 
     # evidencia EG desde parsed_postulante.jsonl (ya calculada sin solapamiento)
     # Ideal: empresa | cargo | fechas + total años/días
     eg_evidencia = get_experiencia_general_text(p)  # <-- IMPORTANTE
-
+    
     eg_results = []
     eg_puntaje_total = 0
     eg_eliminatorio_no_cumple = False
@@ -465,6 +543,7 @@ def eval_one_postulante(p: Dict[str, Any], criteria: Dict[str, Any], debug: bool
         r_eg = evaluar_experiencia_general(
             criterio_text=criterio_eg,
             evidencia_postulante=eg_evidencia,
+            fecha_formacion_minima=fecha_formacion_minima,
             debug=debug
         )
 
@@ -517,7 +596,7 @@ def eval_one_postulante(p: Dict[str, Any], criteria: Dict[str, Any], debug: bool
             "puntaje_total": ec_puntaje_total,
             "eliminatorio_no_cumple": ec_eliminatorio_no_cumple
         },
-        # ✅ NUEVO: EG agregado (no toca FA/EC)
+        # NUEVO: EG agregado (no toca FA/EC)
         "EG": {
             "lines": eg_results,
             "puntaje_total": eg_puntaje_total,
@@ -625,11 +704,11 @@ def main():
                 p = ensure_postulante_dict(p)  # tu normalizador
 
                 nombre = p.get("nombre_full", "(sin nombre)")
-                ok, motivo = is_evaluable_postulante(p)
+                okok, motivo = is_evaluable_postulante(p)
 
                 print(f"[task_41]     ({idx}/{len(postulantes)}) evaluando => {nombre}")
 
-                if not ok:
+                if not okok:
                     print(f"[task_41]       SKIP => {motivo}")
                     resultados.append({
                         "dni": p.get("dni", ""),

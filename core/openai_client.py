@@ -95,7 +95,7 @@ def evaluar_formacion(criterio_text: str, formacion_postulante: str, debug: bool
                 INSTRUCCIONES:
                 - Determina si el postulante CUMPLE, NO_CUMPLE o INFO_INSUFICIENTE.
                 - Cita literalmente la evidencia si existe.
-                - Justifica brevemente.
+                - Justifica muy brevemente.
 
                 Devuelve SOLO este JSON:
                 {{
@@ -149,7 +149,7 @@ def evaluar_estudios_complementarios(criterio_text: str, evidencia_postulante: s
         INSTRUCCIONES:
         - Determina si el postulante CUMPLE, NO_CUMPLE o INFO_INSUFICIENTE.
         - Cita evidencia literal si existe.
-        - Justifica brevemente.
+        - Justifica muy brevemente.
 
         Devuelve SOLO este JSON:
         {{
@@ -190,6 +190,7 @@ def evaluar_estudios_complementarios(criterio_text: str, evidencia_postulante: s
 def evaluar_experiencia_general(
     criterio_text: str,
     evidencia_postulante: str,
+    fecha_formacion_minima: str,
     debug: bool = False
 ) -> dict:
     """
@@ -210,13 +211,15 @@ def evaluar_experiencia_general(
                 EVIDENCIA DEL POSTULANTE (ya consolidada):
                 \"\"\"{evidencia_postulante}\"\"\"
 
+                REQUISITO OBLIGATORIO (Fecha mínima de formación académica):
+                \"\"\"{fecha_formacion_minima}\"\"\"
+
                 INSTRUCCIONES:
+                - Lo mas importante es que la experiencia sea POSTERIOR a la fecha mínima de formación académica.
                 - Determina si el postulante CUMPLE, NO_CUMPLE o INFO_INSUFICIENTE.
                 - NO inventes fechas, cargos ni años.
-                - Si la evidencia contiene "total_anios_calc" o "total_dias_calc", úsalo como referencia principal.
-                - Si hay conflicto entre evidencia textual y total_anios_calc, prioriza total_anios_calc.
                 - Cita evidencia literal.
-                - Justifica brevemente.
+                - Justifica muy brevemente.
 
                 Devuelve SOLO este JSON:
                 {{
@@ -281,9 +284,7 @@ def evaluar_experiencia_especifica(
                 INSTRUCCIONES:
                 - Determina si el postulante CUMPLE, NO_CUMPLE o INFO_INSUFICIENTE.
                 - NO inventes información.
-                - Usa "total_anios_calc" o "total_dias_calc" si están presentes.
-                - Si no hay evidencia clara de funciones relacionadas (analista funcional / analista de sistemas / similares),
-                responde INFO_INSUFICIENTE aunque haya años.
+                - Si no hay evidencia clara de funciones relacionadas con el criterio, responde INFO_INSUFICIENTE aunque haya años.
                 - Cita evidencia literal.
                 - Justifica brevemente.
 

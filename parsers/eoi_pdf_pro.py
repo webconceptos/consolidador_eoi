@@ -6,10 +6,7 @@ from pathlib import Path
 from datetime import datetime, date
 import pdfplumber
 import pytesseract
-
-#from utils.experience import compute_effective_days  # asumo que ya lo tienes
-
-
+from typing import Dict, Any, List, Optional
 
 DATE_RE = re.compile(r"\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\b")
 EMAIL_RE = re.compile(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b")
@@ -168,9 +165,6 @@ def _extract_name_parts(text: str, debug: bool = False, trace: list[str] | None 
         "nombre_full": nombre_full,
     }
 
-
-
-
 def _extract_name_parts_old(text: str) -> dict:
     """
     Extrae apellidos y nombres desde el bloque 'I. DATOS PERSONALES' sin depender de MAYÚSCULAS.
@@ -243,36 +237,159 @@ def _extract_name_parts_old(text: str) -> dict:
         "nombre_full": nombre_full,
     }
 
+###### FORMACIÓN ACADÉMICA ############
+#
+###
 
+def _norm_text(s: str) -> str:
+    # asumo que ya tienes una; dejo una segura si no:
+    s = re.sub(r"[ \t]+", " ", s or "").strip()
+    s = re.sub(r"\s*\n\s*", "\n", s)
+    return s.strip()
 
+def _extract_section(text: str, start_pat: str, end_pats: List[str], max_len: int = 4000) -> str:
+    """Extrae una sección por encabezado y la corta antes del siguiente encabezado."""
+    m = re.search(start_pat, text, re.IGNORECASE)
+    if not m:
+        return ""
+    chunk = text[m.end(): m.end() + max_len]
+    # cortar por el primer end_pat que aparezca
+    cut = len(chunk)
+    for ep in end_pats:
+        me = re.search(ep, chunk, re.IGNORECASE)
+        if me:
+            cut = min(cut, me.start())
+    return _norm_text(chunk[:cut])
 
-def _extract_education(text: str) -> dict:
-    # En tu PDF aparece: BACHILLER / EGRESADO UNIVERSITARIO / MAESTRIA etc.
-    # Aquí hacemos un extract “pragmático”: detecta palabras clave y universidad
-    bach = ""
-    egres = ""
-    titulo = ""
-    uni = ""
+def _extract_education(text: str) -> Dict[str, Any]:
+    """
+    Heurística para CV "Formato Contraloría/BID":
+    - Busca el bloque 'FORMACION ACADEMICA'
+    - Extrae entradas tipo: TITULO/BACHILLER/EGRESADO/... + carrera + fecha + ciudad/pais
+    - Asocia universidad cercana (en líneas contiguas).
+    """
+    text_n = _norm_text(text)
 
-    # universidad (en el ejemplo: “UNIVERSIDAD DE SAN ANTONIO ABAB DEL CUSCO”)
-    m_uni = re.search(r"\bUNIVERSIDAD\b[\s\S]{0,120}\bCUSCO\b", text, re.IGNORECASE)
-    uni = _norm_text(m_uni.group(0)) if m_uni else ""
+    # 1) Aislar sección (evita ruido de otras partes)
+    sec = _extract_section(
+        text_n,
+        start_pat=r"\bFORMACION\s+ACADEMICA\b",
+        end_pats=[
+            r"\bb\.?1\)",            # b.1) cursos
+            r"\bCURSO\b",            # cursos
+            r"\bESTUDIOS\s+COMPLEMENTARIOS\b",
+            r"\bEXPERIENCIA\b",
+        ],
+    )
 
-    # niveles
-    if re.search(r"\bBACHILLER\b", text, re.IGNORECASE):
-        bach = "BACHILLER"
-    if re.search(r"\bEGRESADO\b", text, re.IGNORECASE):
-        egres = "EGRESADO"
-    if re.search(r"\bTITULO\b", text, re.IGNORECASE):
-        titulo = "TITULO"
-    # Nota: si quieres exactitud quirúrgica, lo sacamos por tabla, pero esto sirve para scoring base.
+    # fallback si no hay encabezado exacto
+    if not sec:
+        sec = text_n
 
-    return {
-        "bachiller": bach,
-        "egresado": egres,
-        "titulo": titulo,
-        "universidad": uni,
+    lines = [ln.strip() for ln in sec.splitlines() if ln.strip()]
+
+    # 2) Diccionario de salida (permitimos múltiples grados)
+    out: Dict[str, Any] = {
+        "items": [],   # lista de formaciones detectadas
+        "flags": {     # presencia general
+            "bachiller": False,
+            "egresado": False,
+            "titulo": False,
+            "maestria": False,
+            "egresado_maestria": False,
+            "colegiatura": False,
+        }
     }
+
+    # 3) Flags globales (por si el formato solo lista palabras)
+    def flag(pat: str) -> bool:
+        return bool(re.search(pat, sec, re.IGNORECASE))
+
+    out["flags"]["bachiller"] = flag(r"\bBACHILLER\b")
+    out["flags"]["egresado"] = flag(r"\bEGRESADO\b")
+    out["flags"]["titulo"] = flag(r"\bTITULO\b")
+    out["flags"]["maestria"] = flag(r"\bMAESTR(I|Í)A\b")
+    out["flags"]["egresado_maestria"] = flag(r"\bEGRESADO\s+DE\s+MAESTR(I|Í)A\b")
+    out["flags"]["colegiatura"] = flag(r"\bCOLEGIATURA\b")
+
+    # 4) Regex para capturar filas tipo tabla:
+    #    (grado) (carrera/especialidad) (fecha dd/mm/yyyy o d/m/yyyy) (ciudad/pais)
+    row_re = re.compile(
+        r"\b(?P<grado>TITULO|TÍTULO|BACHILLER|EGRESADO(?:\s+UNIVERSITARIO)?|MAESTR(I|Í)A|EGRESADO\s+DE\s+MAESTR(I|Í)A)\b"
+        r"\s+(?P<carrera>[A-ZÁÉÍÓÚÑa-záéíóúñ./()\- ]{3,80}?)"
+        r"\s+(?P<fecha>\d{1,2}/\d{1,2}/\d{2,4})"
+        r"\s+(?P<lugar>[A-ZÁÉÍÓÚÑa-záéíóúñ./\- ]{3,40})\b",
+        re.IGNORECASE
+    )
+
+    # 5) Helper: detectar universidad en una línea (y unir si está partida)
+    def is_uni_line(ln: str) -> bool:
+        return bool(re.search(r"\bUNIVERSIDAD\b", ln, re.IGNORECASE))
+
+    # índice → línea universidad “compuesta” (si está partida en 2-3 líneas)
+    uni_lines: Dict[int, str] = {}
+    i = 0
+    while i < len(lines):
+        if is_uni_line(lines[i]):
+            uni = lines[i]
+            j = i + 1
+            # unir líneas contiguas que parecen continuar el nombre
+            while j < len(lines) and not row_re.search(lines[j]) and not re.match(r"^[ab]\)?", lines[j], re.I):
+                # corta si aparece otra cabecera fuerte
+                if re.search(r"\b(BACHILLER|TITULO|EGRESADO|MAESTR(I|Í)A|COLEGIATURA)\b", lines[j], re.I):
+                    break
+                # si es claramente otra cosa (fechas, encabezados), paramos
+                if re.search(r"\d{1,2}/\d{1,2}/\d{2,4}", lines[j]):
+                    break
+                if len(lines[j]) <= 3:
+                    break
+                # une
+                uni += " " + lines[j]
+                j += 1
+            uni_lines[i] = _norm_text(uni.replace("\n", " "))
+            i = j
+        else:
+            i += 1
+
+    # 6) Parse de filas + asignación de universidad “cercana”
+    for idx, ln in enumerate(lines):
+        m = row_re.search(ln)
+        if not m:
+            continue
+
+        grado = _norm_text(m.group("grado").upper().replace("TÍTULO", "TITULO"))
+        carrera = _norm_text(m.group("carrera"))
+        fecha = _norm_text(m.group("fecha"))
+        lugar = _norm_text(m.group("lugar"))
+
+        # buscar universidad más cercana (unas líneas arriba/abajo)
+        uni: Optional[str] = None
+        window = range(max(0, idx - 5), min(len(lines), idx + 6))
+        # prioridad: línea con UNIVERSIDAD más cercana
+        best_dist = 999
+        for j in window:
+            if j in uni_lines:
+                dist = abs(j - idx)
+                if dist < best_dist:
+                    best_dist = dist
+                    uni = uni_lines[j]
+
+        out["items"].append({
+            "grado": grado,
+            "carrera": carrera,
+            "fecha": fecha,
+            "lugar": lugar,
+            "universidad": uni or "",
+            "line": idx + 1,
+            "raw": ln,
+        })
+
+    return out
+##
+#
+#
+####### FIN DE FORMACIÓN ACADÉMICA
+
 
 
 def _extract_contact(text: str) -> dict:
@@ -285,8 +402,6 @@ def _extract_contact(text: str) -> dict:
 
     return {"dni": dni, "celular": celular, "email": email}
 
-
-
 def _split_apellidos(apellidos: str) -> tuple[str, str]:
     parts = [p for p in (apellidos or "").split() if p]
     if not parts:
@@ -294,7 +409,6 @@ def _split_apellidos(apellidos: str) -> tuple[str, str]:
     if len(parts) == 1:
         return parts[0], ""
     return parts[0], " ".join(parts[1:])
-
 
 def _is_scanned_pdf(page_texts: list[str]) -> bool:
     if not page_texts:
@@ -305,7 +419,6 @@ def _is_scanned_pdf(page_texts: list[str]) -> bool:
     empty_ratio = 1 - (non_empty_pages / max(len(page_texts), 1))
     return avg_chars < 60 or empty_ratio >= 0.6
 
-
 def _extract_pdf_text(pdf_path: Path, use_ocr: bool, debug: bool, trace: list[str]) -> tuple[str, bool, bool]:
     page_texts: list[str] = []
     with pdfplumber.open(pdf_path) as pdf:
@@ -313,7 +426,14 @@ def _extract_pdf_text(pdf_path: Path, use_ocr: bool, debug: bool, trace: list[st
             page_texts.append(pg.extract_text() or "")
 
         is_scanned = _is_scanned_pdf(page_texts)
-        ocr_used = False
+        print("Es escaneado ?")
+        print(is_scanned)
+
+        print("Es use_ocr ?")
+        print(use_ocr)
+
+
+        ocr_used = use_ocr
         if is_scanned and use_ocr:
             ocr_used = True
             page_texts = []
@@ -322,13 +442,16 @@ def _extract_pdf_text(pdf_path: Path, use_ocr: bool, debug: bool, trace: list[st
                 img = pg.to_image(resolution=300).original
                 ocr_text = pytesseract.image_to_string(img, lang="spa") or ""
                 page_texts.append(ocr_text)
-
+                
     return "\n".join(page_texts), is_scanned, ocr_used
-
 
 def _build_formacion_obligatoria(edu: dict) -> dict:
     items = []
     resumen_parts = []
+
+    print("Educación:")
+    print(edu)
+
     uni = (edu.get("universidad") or "").strip()
     for key in ("bachiller", "egresado", "titulo"):
         label = (edu.get(key) or "").strip()
@@ -352,7 +475,6 @@ def _build_formacion_obligatoria(edu: dict) -> dict:
         "resumen": " ; ".join(resumen_parts).strip(),
         "meta": {"source": "pdf"},
     }
-
 
 def _build_estudios_complementarios(cursos: list[str]) -> dict:
     blocks = []
@@ -388,14 +510,12 @@ def _build_estudios_complementarios(cursos: list[str]) -> dict:
         "resumen": resumen,
     }
 
-
 def _days_between(d1: date | None, d2: date | None) -> int:
     if not d1 or not d2:
         return 0
     if d2 < d1:
         return 0
     return int((d2 - d1).days) + 1
-
 
 def _build_experiencia_block(pairs: list[tuple[str, str]], label: str) -> dict:
     items = []
@@ -430,7 +550,6 @@ def _build_experiencia_block(pairs: list[tuple[str, str]], label: str) -> dict:
         "_meta": {"source": "pdf", "label": label},
     }
 
-
 def _slice_section(text: str, start_anchor: str, end_anchor: str | None) -> str:
     t_low = text.lower()
     s = t_low.find(start_anchor.lower())
@@ -441,7 +560,6 @@ def _slice_section(text: str, start_anchor: str, end_anchor: str | None) -> str:
         if e > s:
             return text[s:e]
     return text[s:]
-
 
 def _extract_date_pairs(section_text: str) -> list[tuple[str, str]]:
     dates = DATE_RE.findall(section_text)
@@ -458,7 +576,6 @@ def _dbg(out_lines: list[str], msg: str, debug: bool):
     if debug:
         print(msg)
 
-
 def parse_eoi_pdf_pro(pdf_path: Path, use_ocr: bool = False, debug: bool = False) -> dict:
 
     trace = []
@@ -469,7 +586,8 @@ def parse_eoi_pdf_pro(pdf_path: Path, use_ocr: bool = False, debug: bool = False
     # --- Extrae texto ---
     raw, is_scanned, ocr_used = _extract_pdf_text(pdf_path, use_ocr, debug, trace)
     text = _norm_text(raw)
-
+    print("Texto PDF normalizado")
+    print(text)
     # --- Debug forense ---
     debug_dir = pdf_path.parent / "_debug_pdfs"
     debug_dir.mkdir(parents=True, exist_ok=True)
@@ -482,6 +600,8 @@ def parse_eoi_pdf_pro(pdf_path: Path, use_ocr: bool = False, debug: bool = False
     # --- Campos base ---
     #name_parts = _extract_name_parts(text)
     name_parts = _extract_name_parts(text, debug=debug, trace=trace)
+    print("Nombre de las partes")
+    print(name_parts)
 
     contact = _extract_contact(text)
     edu = _extract_education(text)

@@ -26,6 +26,20 @@ from typing import Dict, Any, List, Tuple, Optional
 from parsers.eoi_excel import parse_eoi_excel
 from parsers.eoi_pdf import parse_eoi_pdf  # asumiendo que ya lo tienes
 from parsers.eoi_pdf_pro import parse_eoi_pdf_pro
+import sys
+import pytesseract
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
+
+
+pytesseract.pytesseract.tesseract_cmd = (
+    r"C:\Users\67733\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+)
 
 
 OUT_FOLDER_NAME = "011. INSTALACIÓN DE COMITÉ"
@@ -293,7 +307,7 @@ def main():
                     tipo = "EXCEL"
                 else:
                     #data = parse_eoi_pdf(fp, use_ocr=use_ocr)
-                    data = parse_eoi_pdf_pro(fp, use_ocr=use_ocr)
+                    data = parse_eoi_pdf_pro(fp, use_ocr=True)
                     tipo = "PDF"
 
                 # normalizaciones finales (consistentes)
@@ -302,9 +316,18 @@ def main():
                 data["celular"] = normalize_phone(str(data.get("celular","")))
                 data["nombre_full"] = norm(str(data.get("nombre_full","")))
 
-
+                print(data["dni"])
                 resumen_exp_general, (y, m, d), total_days, merged, detalle_exp_general = compute_experience_summary_and_total_calendar_real(data.get("exp_general") or {})
+                #total_exp_general_texto= y + "Año(s)" + m + "Mes(es)" + d + "día(s)"                
+                total_exp_general=(format_ymd(y, m, d))
+                print(total_exp_general)
+
                 resumen_exp_especifica, (y, m, d), total_days, merged , detalle_exp_especifica= compute_experience_summary_and_total_calendar_real(data.get("exp_especifica") or {})
+                #total_exp_especifica_texto= y + "Año(s)" + m + "Mes(es)" + d + "día(s)"
+                total_exp_especifica=(format_ymd(y, m, d))
+                print(total_exp_especifica)
+                
+
                 # payload listo para Task 40 (solo valores)
                 data["_fill_payload"] = {
                     "dni": data.get("dni",""),
@@ -315,11 +338,11 @@ def main():
                     "estudios_complementarios_resumen": (data.get("estudios_complementarios") or {}).get("resumen",""),
                     "exp_general_detalle_text": resumen_exp_general,
                     "exp_general_resumen_text": detalle_exp_general,
-                    "exp_general_total_text": format_ymd(y, m, d),
+                    "exp_general_total_text": total_exp_general,
                     "exp_general_dias": int(data.get("exp_general_dias",0) or 0),
                     "exp_especifica_detalle_text": resumen_exp_especifica,
                     "exp_especifica_resumen_text": detalle_exp_especifica,
-                    "exp_especifica_total_text": format_ymd(y, m, d),
+                    "exp_especifica_total_text": total_exp_especifica,
                     "exp_especifica_dias": int(data.get("exp_especifica_dias",0) or 0),
                 }
 

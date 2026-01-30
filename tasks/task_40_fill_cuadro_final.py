@@ -205,6 +205,7 @@ def parse_layout_min(layout: dict):
 
     # Experiencia general/específica: en tu JSON están como objetos con summary_row/total_row
     eg = sr.get("exp_general", {}) if isinstance(sr.get("exp_general", {}), dict) else {}
+    print(eg)
     ee = sr.get("exp_especifica", {}) if isinstance(sr.get("exp_especifica", {}), dict) else {}
 
     eg_detail_row = int(eg.get("summary_row", tl.get("eg_detail_row", 15)))

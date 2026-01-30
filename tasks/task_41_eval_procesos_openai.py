@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from datetime import datetime, date
 from typing import Dict, Any, List, Optional, Tuple
-
+from openpyxl.cell.cell import MergedCell
 
 #from core.llm_client import evaluar_formacion, evaluar_estudios_complementarios
 from core.openai_client import (
@@ -228,7 +228,6 @@ def get_experiencia_general_text(p: Dict[str, Any]) -> str:
 
     return "\n\n".join(out).strip()
 
-
 def get_experiencia_especifica_text(p: Dict[str, Any]) -> str:
     """
     Arma evidencia EE SOLO con empresa | cargo | fechas,
@@ -286,7 +285,6 @@ def get_experiencia_especifica_text(p: Dict[str, Any]) -> str:
         out.append("experiencias: (sin registros)")
     
     return "\n\n".join(out).strip()
-
 
 def eval_one_postulante_old(p: Dict[str, Any], criteria: Dict[str, Any], debug: bool = False) -> Dict[str, Any]:
     nombre = p.get("nombre_full", "(sin nombre)")
@@ -633,6 +631,144 @@ def resumen_proceso(resultados: List[Dict[str, Any]]) -> Dict[str, Any]:
         "top_10_ec_puntaje": top,
         "generated_at": ts()
     }
+
+def write_value_safe(ws, row: int, col: int, value):
+    """
+    Escribe en (row,col) aunque haya merges:
+    si cae en un MergedCell, escribe en el anchor (top-left) del merge.
+    """
+    cell = ws.cell(row=row, column=col)
+    if not isinstance(cell, MergedCell):
+        cell.value = value
+        return
+
+    coord = cell.coordinate
+    for r in ws.merged_cells.ranges:
+        if coord in r:
+            ws.cell(row=r.min_row, column=r.min_col).value = value
+            return
+
+    # si no detecta el merge (raro), no escribe
+    return
+
+def _estado_to_excel(v: str) -> str:
+    v = (v or "").strip().upper()
+    if v in ("CUMPLE", "NO_CUMPLE", "INFO_INSUFICIENTE"):
+        return v.replace("_", " ")
+    return v
+
+def _safe_int(x, default=0) -> int:
+    try:
+        if x is None:
+            return default
+        s = str(x).strip()
+        return int(s) if s.isdigit() else default
+    except Exception:
+        return default
+
+def write_eval_postulante_to_excel(
+    ws,
+    score_col: int,
+    criteria: Dict[str, Any],
+    result: Dict[str, Any],
+):
+    """
+    ws: hoja 'Evaluación CV'
+    score_col: columna de puntaje del slot (G, I, K...) en número (7,9,11...)
+    criteria: tu criteria_evaluacion.json (dict)
+    result: salida de eval_one_postulante (dict con FA/EC/EG/EE)
+    """
+
+    total = 0
+
+    # -------------------------
+    # FA
+    # -------------------------
+    fa_row = criteria["criterios"]["FA"]["criterio_item"].get("row")
+    if fa_row:
+        fa_estado = _estado_to_excel(result.get("FA", {}).get("estado"))
+        write_value_safe(ws, fa_row, score_col, fa_estado)
+
+    # -------------------------
+    # EC
+    # -------------------------
+    ec_blocks = criteria["criterios"]["EC"]["blocks"]
+    ec_res = (result.get("EC", {}) or {}).get("blocks", []) or []
+
+    for i, cb in enumerate(ec_blocks):
+        rrow = cb["criterio_item"].get("row")
+        modo = (cb.get("modo_evaluacion") or "").strip()
+        valor = cb.get("valor")
+
+        estado = None
+        puntaje = 0
+
+        if i < len(ec_res):
+            estado = (ec_res[i].get("estado") or "").strip().upper()
+
+        if rrow:
+            if modo.lower() == "puntaje":
+                # Si cumple => suma puntaje del criterio, si no => 0
+                puntaje = _safe_int(valor, 0) if estado == "CUMPLE" else 0
+                write_value_safe(ws, rrow, score_col, puntaje)
+                total += puntaje
+            else:
+                write_value_safe(ws, rrow, score_col, _estado_to_excel(estado))
+
+    # -------------------------
+    # EG (Experiencia General)
+    # -------------------------
+    eg_lines = criteria["criterios"]["EG"]["lines"]
+    eg_res = (result.get("EG", {}) or {}).get("lines", []) or []
+
+    for i, line in enumerate(eg_lines):
+        rrow = line["criterio_item"].get("row")
+        modo = (line.get("modo_evaluacion") or "").strip()
+        valor = line.get("valor")
+
+        estado = None
+        if i < len(eg_res):
+            estado = (eg_res[i].get("estado") or "").strip().upper()
+
+        if rrow:
+            if modo.lower() == "puntaje":
+                puntaje = _safe_int(valor, 0) if estado == "CUMPLE" else 0
+                write_value_safe(ws, rrow, score_col, puntaje)
+                total += puntaje
+            else:
+                write_value_safe(ws, rrow, score_col, _estado_to_excel(estado))
+
+    # -------------------------
+    # EE (Experiencia Específica)
+    # -------------------------
+    ee_lines = criteria["criterios"]["EE"]["lines"]
+    ee_res = (result.get("EE", {}) or {}).get("lines", []) or []
+
+    for i, line in enumerate(ee_lines):
+        rrow = line["criterio_item"].get("row")
+        modo = (line.get("modo_evaluacion") or "").strip()
+        valor = line.get("valor")
+
+        estado = None
+        if i < len(ee_res):
+            estado = (ee_res[i].get("estado") or "").strip().upper()
+
+        if rrow:
+            if modo.lower() == "puntaje":
+                puntaje = _safe_int(valor, 0) if estado == "CUMPLE" else 0
+                write_value_safe(ws, rrow, score_col, puntaje)
+                total += puntaje
+            else:
+                write_value_safe(ws, rrow, score_col, _estado_to_excel(estado))
+
+    # -------------------------
+    # TOTAL (en tu JSON: stop_row = 22)
+    # -------------------------
+    stop_row = (criteria.get("_meta") or {}).get("stop_row")
+    if stop_row:
+        write_value_safe(ws, int(stop_row), score_col, total)
+
+    return total
 
 def main():
     ap = argparse.ArgumentParser()

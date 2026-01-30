@@ -18,7 +18,7 @@ from datetime import datetime, date
 
 from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
-
+import unicodedata
 
 # ============================================================
 # Utils
@@ -480,7 +480,14 @@ def _read_desc_block(ws: Worksheet, start_row: int, max_lines: int = 25) -> Tupl
             continue
 
         # preferir celda C (3) si existe, sino toda la fila
+        print("linea :")
+        print(r)
+
         line = cell_str(ws, r, 3) or trow
+        #line_debug = debug_unicode_chars(line)
+        print(line)
+        line= sanitize_text(line)
+        print(line)
         line = _clean_desc(line)
         if line:
             lines.append(line)
@@ -490,6 +497,7 @@ def _read_desc_block(ws: Worksheet, start_row: int, max_lines: int = 25) -> Tupl
     # Une líneas: si excel ya trae bullets en una sola celda, aquí no lo rompes.
     desc = "\n".join(lines).strip()
     desc = _clean_desc(desc)
+
 
     return desc, r
 
@@ -511,9 +519,87 @@ def _find_exp_header_row(ws: Worksheet, anchor_row: int) -> Optional[int]:
             return r
     return None
 
+def sanitize_text(s: str) -> str:
+    if not isinstance(s, str):
+        return s
+
+    # Normaliza Unicode (reduce variantes visuales a formas estándar cuando aplica)
+    s = unicodedata.normalize("NFKC", s)
+
+    # Reemplazos tipográficos comunes
+    s = (s.replace("“", '"').replace("”", '"')
+           .replace("’", "'")
+           .replace("–", "-").replace("—", "-")
+           .replace("▪","-")
+           .replace("✓", "-"))
+
+    # Cualquier símbolo Unicode (So) tipo bullet/cuadritos/etc -> "-"
+    # (mata ▪ • ◦ ▫ ‣ etc sin listarlos)
+    s = "".join("-" if (unicodedata.category(c) == "So") else c for c in s)
+
+    # También a veces bullets vienen como "Po" (puntuación) tipo U+2022
+    s = "".join("-" if (unicodedata.category(c) == "Po" and ord(c) > 127) else c for c in s)
+
+    # Forzar salto de línea antes de cada "-" usado como bullet
+    s = re.sub(r"(?<!\n)\s*-\s*", "\n- ", s)
+
+    # Limpieza
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+def debug_unicode_chars(s: str):
+    for ch in set(s):
+        if ord(ch) > 127:  # solo no-ascii
+            print(repr(ch), hex(ord(ch)))
+
+def sanitize_text_salto_linea(s: str) -> str:
+    if not isinstance(s, str):
+        return s
+
+    # 1️⃣ Normalización de caracteres problemáticos
+    replacements = {
+        "“": '"',
+        "”": '"', 
+        "’": "'",
+        "–": "-", 
+        "—": "-",
+        "✓": "-", 
+        "*": "-",
+        "•": "-", 
+        "▪": "-", 
+        "●": "-", 
+        "·": "-", 
+        "■": "-", 
+        "□": "-",
+        "▪": "-",
+        "▪": "-",
+        "▪": "-",
+    }    
+
+    for k, v in replacements.items():
+        s = s.replace(k, v)
+
+    # 2️⃣ Bullets → salto de línea + bullet
+    bullets = ["•", "-", "·", "●", "▪"]
+
+    for b in bullets:
+        s = re.sub(
+            rf"(?<!\n)\s*{re.escape(b)}\s*",
+            f"\n{b} ",
+            s
+        )
+
+    # 3️⃣ Limpieza final
+    s = re.sub(r"\n{3,}", "\n\n", s)   # evita saltos excesivos
+    #s = debug_unicode_chars(s)
+    return s.strip()
 
 def _parse_experiencia_from_header(ws: Worksheet, anchor_row: int, debug: bool = False) -> Dict[str, Any]:
     header_row = _find_exp_header_row(ws, anchor_row)
+    print("2. _find_exp_header_row")
+    print(header_row)
+
     if not header_row:
         return {"items": [], "total_dias_calc": 0, "resumen": "", "_meta": {"anchor_row": anchor_row, "header_row": None}}
 
@@ -564,6 +650,7 @@ def _parse_experiencia_from_header(ws: Worksheet, anchor_row: int, debug: bool =
             continue
 
         nro = norm(cell_raw(ws, r, col_nro))
+
         # fila basura si "No." o vacío
         if not nro_ok(str(nro)):
             # si está completamente vacía, avanzar; si es texto, también (basura)
@@ -647,6 +734,9 @@ def _parse_experiencia_from_header(ws: Worksheet, anchor_row: int, debug: bool =
 
 def parse_experiencia_general(ws: Worksheet, debug: bool = False) -> Dict[str, Any]:
     anchor = _find_section_anchor(ws, r"a\)\s*EXPERIENCIA\s+GENERAL", 1, ws.max_row)
+    print("1. _find_section_anchor")
+    print(anchor)
+    
     if not anchor:
         anchor = _find_section_anchor(ws, r"EXPERIENCIA\s+GENERAL", 1, ws.max_row)
     if not anchor:
@@ -675,11 +765,26 @@ def parse_eoi_excel(
     wb = load_workbook(xlsx_path, data_only=True)
     ws = find_best_sheet(wb)
 
+    print("DP : -------------------------------------------------------------------DESDE EOI_EXCEL")
     dp = parse_datos_personales(ws, debug=debug)
+    print(dp)
+
+    print("FA : -------------------------------------------------------------------DESDE EOI_EXCEL")    
     fa = parse_formacion_obligatoria(ws, debug=debug)
+    print(fa)
+
+    print("EC : -------------------------------------------------------------------DESDE EOI_EXCEL")        
     ec = parse_estudios_complementarios(ws, debug=debug)
+    print(ec)
+
+    print("EG : -------------------------------------------------------------------DESDE EOI_EXCEL")    
     eg = parse_experiencia_general(ws, debug=debug)
+    print(eg)
+
+    print("EE : -------------------------------------------------------------------DESDE EOI_EXCEL")
     ee = parse_experiencia_especifica(ws, debug=debug)
+    print(ee)    
+
 
     out = {
         **dp,

@@ -417,7 +417,7 @@ def step_eval_llm(tasks_dir: Path, proc_dir: Path, dry_run: bool, debug: bool, l
         "--root", str(proc_dir.parent),
         "--only-proc", proc_dir.name,
     ]
-    
+
     if limit > 0:
         cmd += ["--limit", str(limit)]
 
@@ -468,7 +468,7 @@ def main():
         args.do_parse = True
         args.do_fill = True
         args.do_criteria = True
-        args.do_eval = True
+        args.do_eval = False
         args.write_resumen = True
 
 
